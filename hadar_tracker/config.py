@@ -23,6 +23,8 @@ class Config:
     telegram_chat_id: str
     user_id: int
     forum_id: int
+    openrouter_api_key: str | None = None
+    openrouter_model: str = "anthropic/claude-sonnet-4.5"
 
 
 def load_config(env: dict[str, str] | None = None) -> Config:
@@ -30,6 +32,9 @@ def load_config(env: dict[str, str] | None = None) -> Config:
 
     Raises ConfigError (loudly) if a required variable is missing, so a
     misconfigured cron run fails fast instead of silently doing nothing.
+    OPENROUTER_API_KEY is intentionally NOT required — Phase 2 (LLM trade-
+    signal classification) is additive; with no key set, classify_post
+    short-circuits to None and the pipeline behaves exactly as Phase 1 did.
     """
     source = os.environ if env is None else env
     token = source.get("TELEGRAM_BOT_TOKEN")
@@ -55,4 +60,6 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         telegram_chat_id=chat_id,
         user_id=int(source.get("USER_ID", "5609")),
         forum_id=int(source.get("FORUM_ID", "1")),
+        openrouter_api_key=source.get("OPENROUTER_API_KEY") or None,
+        openrouter_model=source.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5"),
     )
