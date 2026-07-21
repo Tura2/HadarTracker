@@ -28,7 +28,7 @@ def format_message(
         <body>
 
         🤖 Signal: ADD — DJIN (conviction: medium)
-           "close above 460 → breakout"
+           "close above 460 — breakout"
     Empty/omitted parts are skipped. The signal section only appears when
     `signal` is given AND `signal.is_signal` is true — a classified-as-noise
     post (or a classification failure, where `signal` is None) renders
@@ -50,8 +50,9 @@ def format_message(
             header += f" — {signal.ticker_guess}"
         header += f" (conviction: {signal.conviction})"
         lines.append(header)
-        if signal.rationale:
-            lines.append(f'   "{signal.rationale}"')
+        rationale_parts = [p for p in (signal.price_levels, signal.rationale) if p]
+        if rationale_parts:
+            lines.append(f'   "{" — ".join(rationale_parts)}"')
     return "\n".join(lines).strip()
 
 

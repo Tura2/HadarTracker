@@ -95,7 +95,10 @@ def _signal(**overrides):
 
 def test_format_message_appends_signal_section_when_is_signal_true():
     out = notifier.format_message("s", (), "b", signal=_signal())
-    assert out == 's\n\nb\n\n🤖 Signal: ADD — ARDM (conviction: medium)\n   "expects breakout"'
+    assert out == (
+        's\n\nb\n\n🤖 Signal: ADD — ARDM (conviction: medium)\n'
+        '   "close above 460 — expects breakout"'
+    )
 
 
 def test_format_message_omits_signal_section_when_is_signal_false():
@@ -111,6 +114,21 @@ def test_format_message_omits_signal_section_when_signal_is_none():
 def test_format_message_signal_without_ticker_guess_omits_dash():
     out = notifier.format_message("s", (), "b", signal=_signal(ticker_guess=None))
     assert "🤖 Signal: ADD (conviction: medium)" in out
+
+
+def test_format_message_includes_price_levels_when_set():
+    out = notifier.format_message("s", (), "b", signal=_signal(price_levels="close above 460"))
+    assert "close above 460" in out
+    # price_levels and rationale should both be visible, on the rationale line.
+    assert '"close above 460 — expects breakout"' in out
+
+
+def test_format_message_omits_price_levels_artifact_when_none():
+    out = notifier.format_message("s", (), "b", signal=_signal(price_levels=None))
+    assert '"expects breakout"' in out
+    # No stray leading dash/separator when price_levels is absent.
+    assert "— expects breakout" not in out
+    assert '" — ' not in out
 
 
 def test_send_post_passes_signal_through_to_format_message(monkeypatch):
