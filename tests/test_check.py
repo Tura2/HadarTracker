@@ -1,3 +1,5 @@
+import pytest
+
 from hadar_tracker import check, db
 from hadar_tracker.config import Config
 from hadar_tracker.models import Post
@@ -70,3 +72,59 @@ def test_process_skips_already_seen_posts(tmp_path):
     assert new == []
     assert sent == []
     assert db.count_posts(conn) == 1
+
+
+def test_process_does_not_persist_post_when_send_fails(tmp_path):
+    # If send_post raises (e.g. a real Telegram API error), the post must not
+    # be committed to the DB — otherwise db.post_exists would mark it as
+    # already seen and the notification would be permanently, silently lost
+    # on the next run instead of being retried.
+    conn = make_conn()
+    config = make_config(tmp_path)
+
+    def failing_send(*args, **kwargs):
+        raise RuntimeError("telegram api error")
+
+    posts = [Post("1001", "t1", 1, "900", "s", "old", ())]
+
+    with pytest.raises(RuntimeError, match="telegram api error"):
+        check.process_new_posts(
+            conn, config, posts,
+            download=lambda *a, **k: None,
+            send_post=failing_send,
+        )
+
+    assert db.count_posts(conn) == 0
+    assert db.post_exists(conn, "1001") is False
+
+
+def test_process_keeps_earlier_successes_when_later_post_send_fails(tmp_path):
+    # A failure partway through a batch must not roll back or lose posts
+    # that were already successfully sent+inserted earlier in the same call.
+    conn = make_conn()
+    config = make_config(tmp_path)
+    sent = []
+
+    def flaky_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None):
+        sent.append(subject)
+        if subject == "second":
+            raise RuntimeError("telegram api error")
+
+    posts = [
+        Post("1001", "t1", 1, "900", "first", "body1", ()),
+        Post("1002", "t2", 2, "900", "second", "body2", ()),
+    ]
+
+    with pytest.raises(RuntimeError, match="telegram api error"):
+        check.process_new_posts(
+            conn, config, posts,
+            download=lambda *a, **k: None,
+            send_post=flaky_send,
+        )
+
+    assert sent == ["first", "second"]
+    # First post's send succeeded before the second failed, so it remains
+    # committed; the second, whose send raised, was never persisted.
+    assert db.count_posts(conn) == 1
+    assert db.post_exists(conn, "1001") is True
+    assert db.post_exists(conn, "1002") is False

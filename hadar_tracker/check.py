@@ -13,8 +13,14 @@ def process_new_posts(
     download=None,
     send_post=None,
 ) -> list[Post]:
-    """Insert unseen posts, download any attachment, and notify — one message
-    each. Returns the posts newly processed.
+    """Download any attachment, notify, then persist unseen posts — one
+    message each. Returns the posts newly processed.
+
+    Notification happens before the DB insert so that if `send_post` raises
+    (e.g. a real Telegram API error), the post is NOT marked as seen and will
+    be retried on the next run instead of being silently and permanently
+    dropped. Earlier posts in the same batch that already succeeded remain
+    committed even if a later post's send fails.
 
     `download` and `send_post` are injected so this is unit-testable without a
     live network or Telegram. They resolve to the real functions at call time
@@ -35,6 +41,15 @@ def process_new_posts(
         if post.image_file_name:
             image_local_path = download(post.image_file_name, config.images_dir)
 
+        send_post(
+            config.telegram_bot_token,
+            config.telegram_chat_id,
+            post.subject,
+            post.tags,
+            post.body,
+            post.root_subject,
+            image_local_path,
+        )
         db.insert_post(
             conn,
             post.msg_id,
@@ -48,15 +63,6 @@ def process_new_posts(
             post.image_file_name,
             image_local_path,
             now_iso(),
-        )
-        send_post(
-            config.telegram_bot_token,
-            config.telegram_chat_id,
-            post.subject,
-            post.tags,
-            post.body,
-            post.root_subject,
-            image_local_path,
         )
         new_posts.append(post)
 
