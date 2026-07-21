@@ -1,3 +1,6 @@
+import json
+import pathlib
+
 import pytest
 
 from hadar_tracker import check, db
@@ -190,3 +193,110 @@ def test_run_check_reports_failure_and_alerts_when_processing_fails(tmp_path, mo
     assert len(alerts) == 1
     assert "telegram api error" in alerts[0]
     assert any("telegram api error" in record.message for record in caplog.records)
+
+
+class _FakeResponse:
+    """Same shape as tests/test_client.py's FakeResponse — reused here so the
+    real fetch_raw/fetch_posts/parse_posts chain runs unmodified; only the
+    `requests` module they call through is faked."""
+
+    def __init__(self, payload, status=200):
+        self._payload = payload
+        self.status_code = status
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class _FakeRequests:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def post(self, url, data=None, headers=None, timeout=None):
+        self.calls.append({"url": url, "data": data, "headers": headers, "timeout": timeout})
+        return self.response
+
+
+def test_run_check_end_to_end_through_real_parser(tmp_path, monkeypatch):
+    """Full pipeline test with only the network and Telegram/image-download
+    boundaries faked.
+
+    Every existing test in this file monkeypatches client.fetch_posts
+    directly with hand-built Post objects, so the real parse_posts field
+    mapping (scraper/parse.py) is never exercised in the same test that also
+    drives check.py/db.py. Here we fake `hadar_tracker.scraper.client.requests`
+    instead, so fetch_raw -> fetch_posts -> parse_posts all run for real
+    against the same tests/fixtures/sample_stream.json fixture that
+    tests/test_parse.py already pins down field-by-field. That guards against
+    a Post field rename on the parser side silently breaking the
+    check/db/notifier side, which independently-mocked halves can't catch.
+    """
+    payload = json.loads(
+        pathlib.Path("tests/fixtures/sample_stream.json").read_text(encoding="utf-8")
+    )
+    fake_requests = _FakeRequests(_FakeResponse(payload))
+    monkeypatch.setattr(client, "requests", fake_requests)
+
+    db_path = str(tmp_path / "hadar.sqlite3")
+    config = Config(
+        db_path=db_path,
+        images_dir=str(tmp_path / "images"),
+        telegram_bot_token="tok",
+        telegram_chat_id="42",
+        user_id=5609,
+        forum_id=1,
+    )
+
+    sent = []
+
+    def fake_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None):
+        sent.append((subject, tags, body, root_subject, image_path))
+
+    monkeypatch.setattr("hadar_tracker.notifier.send_post", fake_send)
+
+    downloaded = []
+
+    def fake_download(msg_file_name, images_dir):
+        downloaded.append((msg_file_name, images_dir))
+        return f"{images_dir}/{msg_file_name}"
+
+    monkeypatch.setattr("hadar_tracker.images.download_image", fake_download)
+
+    rc = check.run_check(config)
+
+    assert rc == 0
+
+    # Same 4 Hadar-authored msg_ids that
+    # tests/test_parse.py::test_parse_filters_to_hadar_only already
+    # establishes for this exact fixture via the real parser alone — grounds
+    # this test's expectation in the parser's own already-verified behavior.
+    conn = db.connect(db_path)  # db.connect sets row_factory = sqlite3.Row
+    rows = conn.execute("SELECT msg_id, root_subject FROM posts ORDER BY msg_id").fetchall()
+    assert [r["msg_id"] for r in rows] == ["5001", "5002", "5004", "5006"]
+
+    # 5006's thread root (L1=902) is authored by a *different* user (8888) —
+    # tests/test_parse.py::test_parse_reply_resolves_root_subject_when_root_is_another_user
+    # proves parse_posts resolves this correctly in isolation; asserting it
+    # here proves that root_subject value survives the real parser -> DB
+    # round trip through the whole pipeline, not just an isolated parse call.
+    root_subjects = {r["msg_id"]: r["root_subject"] for r in rows}
+    assert root_subjects["5006"] == "פועלים"
+    assert root_subjects["5002"] == "תל אביב 35"
+    assert root_subjects["5001"] is None
+
+    # The one attachment in the fixture (on msg 5002) went through the faked
+    # download boundary, and the resulting local path made it into both the
+    # Telegram send call and the DB row.
+    assert downloaded == [("c310bc13-abcd.gif", config.images_dir)]
+    expected_path = f"{config.images_dir}/c310bc13-abcd.gif"
+    image_row = conn.execute(
+        "SELECT image_local_path FROM posts WHERE msg_id='5002'"
+    ).fetchone()
+    assert image_row["image_local_path"] == expected_path
+    assert any(entry[4] == expected_path for entry in sent)
+    assert len(sent) == 4
