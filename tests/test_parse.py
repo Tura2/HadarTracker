@@ -171,3 +171,62 @@ def test_parse_thread_transcript_is_sorted_even_when_payload_order_is_not():
     assert [ti.posted_at for ti in reply.thread_transcript] == [
         "2026-07-21T09:00:00", "2026-07-21T12:00:00",
     ]
+
+
+def test_parse_skips_malformed_other_user_item_in_thread_scan_without_crashing():
+    # Finding 3 regression: a malformed Level/DateCreated on some OTHER
+    # user's post (not Hadar's) in the same thread group must not crash the
+    # whole parse_posts call — Phase 1 never even looked at those fields for
+    # non-Hadar items, and Phase 2's thread-transcript scan shouldn't newly
+    # depend on their validity. The malformed item is simply skipped from
+    # the transcript; Hadar's own post still parses fine.
+    payload = {
+        "Data": [
+            {
+                "MsgId": 8001,
+                "DateCreated": "21/07/26 | 09:00",
+                "Level": 1,
+                "L1": 960,
+                "subject": "נושא אחר",
+                "Msg": "root post by someone else",
+                "Tags": "",
+                "HasImages": 0,
+                "MsgFileName": None,
+                "User": {"UserId": 4242},
+            },
+            {
+                "MsgId": 8002,
+                # Malformed DateCreated on a non-Hadar post sharing the thread.
+                "DateCreated": "not-a-date",
+                "Level": 2,
+                "L1": 960,
+                "subject": "",
+                "Msg": "malformed reply by someone else",
+                "Tags": "",
+                "HasImages": 0,
+                "MsgFileName": None,
+                "User": {"UserId": 4242},
+            },
+            {
+                "MsgId": 8003,
+                "DateCreated": "21/07/26 | 10:00",
+                "Level": 2,
+                "L1": 960,
+                "subject": "",
+                "Msg": "hadar's reply",
+                "Tags": "",
+                "HasImages": 0,
+                "MsgFileName": None,
+                "User": {"UserId": 5609},
+            },
+        ],
+        "NumberOfPages": 0,
+        "IsMoreMsg": 0,
+    }
+    posts = parse_posts(payload)
+    reply = next(p for p in posts if p.msg_id == "8003")
+    assert reply.body == "hadar's reply"
+    transcript_bodies = [ti.body for ti in reply.thread_transcript]
+    assert "malformed reply by someone else" not in transcript_bodies
+    assert "root post by someone else" in transcript_bodies
+    assert "hadar's reply" in transcript_bodies

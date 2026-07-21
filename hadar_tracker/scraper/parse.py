@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime
 
 from hadar_tracker.models import Post, ThreadItem
+
+log = logging.getLogger("hadar_tracker.scraper.parse")
 
 HADAR_USER_ID = 5609
 
@@ -84,14 +87,29 @@ def parse_posts(payload: dict, user_id: int = HADAR_USER_ID) -> list[Post]:
     for item in data:
         thread_group = str(item.get("L1"))
         user = item.get("User") or {}
-        author = "hadar" if user.get("UserId") == user_id else "other"
+        is_hadar = user.get("UserId") == user_id
+        author = "hadar" if is_hadar else "other"
+        try:
+            level = int(item.get("Level"))
+            posted_at = parse_date(item.get("DateCreated"))
+        except (TypeError, ValueError) as exc:
+            # A malformed Level/DateCreated on some OTHER user's post must not
+            # crash the whole run (Phase 1 never even looked at those fields
+            # on non-Hadar items). Hadar's own items are re-parsed below
+            # without this guard, so a malformed field on a genuinely-Hadar
+            # post still raises loudly, unchanged from Phase 1.
+            log.warning(
+                "skipping malformed item (msg_id=%s) from thread transcript scan: %s",
+                item.get("MsgId"), exc,
+            )
+            continue
         threads.setdefault(thread_group, []).append(
             ThreadItem(
                 author=author,
-                level=int(item.get("Level")),
+                level=level,
                 subject=item.get("subject") or "",
                 body=item.get("Msg") or "",
-                posted_at=parse_date(item.get("DateCreated")),
+                posted_at=posted_at,
             )
         )
 
