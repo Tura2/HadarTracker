@@ -136,3 +136,23 @@ def test_send_post_passes_signal_through_to_format_message(monkeypatch):
     monkeypatch.setattr(notifier, "Bot", FakeBot)
     notifier.send_post("tok", "42", "s", (), "b", signal=_signal())
     assert "🤖 Signal: ADD" in FakeBot.last["text"]
+
+
+def test_send_post_truncated_caption_still_contains_full_signal_section(monkeypatch, tmp_path):
+    # Regression for finding 1: a long image-post body must not push the
+    # signal section (the whole point of Phase 2) off the end of the
+    # 1024-char Telegram photo caption. The body should shrink instead.
+    FakeBot.last = {}
+    monkeypatch.setattr(notifier, "Bot", FakeBot)
+    img = tmp_path / "chart.gif"
+    img.write_bytes(b"\x89PNG\r\n")
+    signal = _signal()
+    notifier.send_post(
+        "tok", "42", "s", (), "x" * 2000, image_path=str(img), signal=signal
+    )
+    caption = FakeBot.last["caption"]
+    assert len(caption) <= 1024
+    assert (
+        '🤖 Signal: ADD — ARDM (conviction: medium)\n'
+        '   "close above 460 — expects breakout"'
+    ) in caption
