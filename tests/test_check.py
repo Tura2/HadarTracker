@@ -161,3 +161,32 @@ def test_run_check_reports_failure_and_alerts(tmp_path, monkeypatch):
     assert rc == 1
     assert len(alerts) == 1
     assert "shape changed" in alerts[0]
+
+
+def test_run_check_reports_failure_and_alerts_when_processing_fails(tmp_path, monkeypatch, caplog):
+    # A genuinely new post that fails to send (e.g. a real Telegram API
+    # error) propagates out of process_new_posts by design (see its
+    # docstring), but run_check must still fail loudly: log + alert + rc=1.
+    # This is the gap the old code had — only the fetch_posts call was
+    # guarded, so this exception used to escape run_check unhandled.
+    config = make_config(tmp_path)
+    fetched = [Post("3001", "t", 1, "900", "טבע", "brand new post", ("TEVA",))]
+    monkeypatch.setattr(client, "fetch_posts", lambda **k: fetched)
+
+    def failing_send(*args, **kwargs):
+        raise RuntimeError("telegram api error")
+
+    monkeypatch.setattr("hadar_tracker.notifier.send_post", failing_send)
+    alerts = []
+    monkeypatch.setattr(
+        "hadar_tracker.notifier.send_alert",
+        lambda token, chat_id, message: alerts.append(message),
+    )
+
+    with caplog.at_level("ERROR"):
+        rc = check.run_check(config)
+
+    assert rc == 1
+    assert len(alerts) == 1
+    assert "telegram api error" in alerts[0]
+    assert any("telegram api error" in record.message for record in caplog.records)

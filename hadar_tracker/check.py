@@ -77,7 +77,12 @@ def run_check(config: Config | None = None) -> int:
     """Run one incremental check. Returns 0 on success, 1 on failure.
 
     On failure the error is logged AND a Telegram alert is sent AND we return
-    non-zero — the spec's no-silent-failure contract.
+    non-zero — the spec's no-silent-failure contract. This applies to EVERY
+    stage of the run (DB connect/init, the scrape, and processing new posts —
+    which covers downloading attachments, sending Telegram messages, and
+    persisting to the DB), not just the scrape call, since a network/HTTP
+    error while sending or downloading for a genuinely new post is the most
+    likely real-world failure mode.
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -88,24 +93,38 @@ def run_check(config: Config | None = None) -> int:
     if config is None:
         config = load_config()
 
-    conn = db.connect(config.db_path)
-    db.init_db(conn)
+    def alert(message: str) -> None:
+        try:
+            notifier.send_alert(
+                config.telegram_bot_token,
+                config.telegram_chat_id,
+                message,
+            )
+        except Exception as alert_exc:  # noqa: BLE001 - never let alerting itself crash the run
+            log.error("failed to send Telegram alert: %s", alert_exc)
+
+    try:
+        conn = db.connect(config.db_path)
+        db.init_db(conn)
+    except Exception as exc:  # noqa: BLE001 - fail loudly on ANY DB setup error
+        log.error("run failed: %s", exc)
+        alert(f"scraper run failed: {exc}")
+        return 1
 
     try:
         posts = client.fetch_posts(user_id=config.user_id, forum_id=config.forum_id)
     except Exception as exc:  # noqa: BLE001 - fail loudly on ANY scrape error
         log.error("scrape failed: %s", exc)
-        try:
-            notifier.send_alert(
-                config.telegram_bot_token,
-                config.telegram_chat_id,
-                f"scraper run failed: {exc}",
-            )
-        except Exception as alert_exc:  # noqa: BLE001
-            log.error("failed to send Telegram alert: %s", alert_exc)
+        alert(f"scraper run failed: {exc}")
         return 1
 
-    new_posts = process_new_posts(conn, config, posts)
+    try:
+        new_posts = process_new_posts(conn, config, posts)
+    except Exception as exc:  # noqa: BLE001 - fail loudly on ANY processing error
+        log.error("run failed: %s", exc)
+        alert(f"scraper run failed: {exc}")
+        return 1
+
     log.info("check complete: %d new post(s)", len(new_posts))
     return 0
 
