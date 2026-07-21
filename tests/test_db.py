@@ -59,3 +59,52 @@ def test_connect_creates_parent_directory(tmp_path):
     db.init_db(conn)
     assert db_file.parent.exists()
     assert db.count_posts(conn) == 0
+
+
+def test_insert_stores_signal_json():
+    conn = make_conn()
+    db.insert_post(
+        conn, "p3", "t", 1, "900", None, "s", "body", (), None, None, "s1",
+        signal_json='{"is_signal": true, "action": "add"}',
+    )
+    row = conn.execute("SELECT signal_json FROM posts WHERE msg_id='p3'").fetchone()
+    assert row["signal_json"] == '{"is_signal": true, "action": "add"}'
+
+
+def test_insert_signal_json_defaults_to_none():
+    conn = make_conn()
+    db.insert_post(conn, "p4", "t", 1, "900", None, "s", "body", (), None, None, "s1")
+    row = conn.execute("SELECT signal_json FROM posts WHERE msg_id='p4'").fetchone()
+    assert row["signal_json"] is None
+
+
+def test_init_db_migrates_table_created_before_signal_json_existed():
+    conn = db.connect(":memory:")
+    # Simulate a pre-Phase-2 database: the exact CREATE TABLE Phase 1 shipped,
+    # with no signal_json column.
+    conn.executescript(
+        """
+        CREATE TABLE posts (
+            msg_id           TEXT PRIMARY KEY,
+            posted_at        TEXT NOT NULL,
+            level            INTEGER NOT NULL,
+            thread_group     TEXT NOT NULL,
+            root_subject     TEXT,
+            subject          TEXT NOT NULL,
+            body             TEXT NOT NULL,
+            tags             TEXT NOT NULL,
+            image_file_name  TEXT,
+            image_local_path TEXT,
+            scraped_at       TEXT NOT NULL
+        );
+        """
+    )
+    conn.commit()
+    columns_before = {row[1] for row in conn.execute("PRAGMA table_info(posts)").fetchall()}
+    assert "signal_json" not in columns_before
+
+    db.init_db(conn)  # must not raise, and must add the missing column
+
+    columns_after = {row[1] for row in conn.execute("PRAGMA table_info(posts)").fetchall()}
+    assert "signal_json" in columns_after
+    assert db.insert_post(conn, "p5", "t", 1, "900", None, "s", "b", (), None, None, "s1") is True
