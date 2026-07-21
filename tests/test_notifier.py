@@ -1,4 +1,5 @@
 import hadar_tracker.notifier as notifier
+from hadar_tracker.models import Signal
 
 
 class FakeBot:
@@ -76,3 +77,44 @@ def test_send_alert_prefixes_message(monkeypatch):
     assert FakeBot.last["kind"] == "message"
     assert "scraper run failed: boom" in FakeBot.last["text"]
     assert "HadarTracker" in FakeBot.last["text"]
+
+
+def _signal(**overrides):
+    fields = dict(
+        is_signal=True,
+        ticker_mentioned="Aerodrome",
+        ticker_guess="ARDM",
+        action="add",
+        conviction="medium",
+        price_levels="close above 460",
+        rationale="expects breakout",
+    )
+    fields.update(overrides)
+    return Signal(**fields)
+
+
+def test_format_message_appends_signal_section_when_is_signal_true():
+    out = notifier.format_message("s", (), "b", signal=_signal())
+    assert out == 's\n\nb\n\n🤖 Signal: ADD — ARDM (conviction: medium)\n   "expects breakout"'
+
+
+def test_format_message_omits_signal_section_when_is_signal_false():
+    out = notifier.format_message("s", (), "b", signal=_signal(is_signal=False))
+    assert out == "s\n\nb"
+
+
+def test_format_message_omits_signal_section_when_signal_is_none():
+    out = notifier.format_message("s", (), "b", signal=None)
+    assert out == "s\n\nb"
+
+
+def test_format_message_signal_without_ticker_guess_omits_dash():
+    out = notifier.format_message("s", (), "b", signal=_signal(ticker_guess=None))
+    assert "🤖 Signal: ADD (conviction: medium)" in out
+
+
+def test_send_post_passes_signal_through_to_format_message(monkeypatch):
+    FakeBot.last = {}
+    monkeypatch.setattr(notifier, "Bot", FakeBot)
+    notifier.send_post("tok", "42", "s", (), "b", signal=_signal())
+    assert "🤖 Signal: ADD" in FakeBot.last["text"]

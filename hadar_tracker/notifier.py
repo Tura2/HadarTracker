@@ -5,6 +5,8 @@ from typing import Sequence
 
 from telegram import Bot
 
+from hadar_tracker.models import Signal
+
 _CAPTION_LIMIT = 1024
 
 
@@ -13,16 +15,24 @@ def format_message(
     tags: Sequence[str],
     body: str,
     root_subject: str | None = None,
+    signal: Signal | None = None,
 ) -> str:
     """Build the notification text for a post.
 
-    Layout (each present part on its own line, then a blank line, then body):
+    Layout (each present part on its own line, then a blank line, then body,
+    then an optional trailing signal section):
         <subject>
         🏷 TEVA, ICL
         ↩️ Replying to: <root_subject>
 
         <body>
-    Empty/omitted parts are skipped.
+
+        🤖 Signal: ADD — DJIN (conviction: medium)
+           "close above 460 → breakout"
+    Empty/omitted parts are skipped. The signal section only appears when
+    `signal` is given AND `signal.is_signal` is true — a classified-as-noise
+    post (or a classification failure, where `signal` is None) renders
+    exactly as it did in Phase 1.
     """
     lines: list[str] = []
     if subject:
@@ -33,6 +43,15 @@ def format_message(
         lines.append("↩️ Replying to: " + root_subject)
     lines.append("")
     lines.append(body)
+    if signal is not None and signal.is_signal:
+        lines.append("")
+        header = f"🤖 Signal: {signal.action.upper()}"
+        if signal.ticker_guess:
+            header += f" — {signal.ticker_guess}"
+        header += f" (conviction: {signal.conviction})"
+        lines.append(header)
+        if signal.rationale:
+            lines.append(f'   "{signal.rationale}"')
     return "\n".join(lines).strip()
 
 
@@ -44,10 +63,12 @@ def send_post(
     body: str,
     root_subject: str | None = None,
     image_path: str | None = None,
+    signal: Signal | None = None,
 ) -> None:
     """Send one Telegram message for a post: photo+caption if image_path is
-    set, otherwise a plain text message."""
-    text = format_message(subject, tags, body, root_subject)
+    set, otherwise a plain text message. Appends a trade-signal section if
+    `signal` is given and classified as a real signal."""
+    text = format_message(subject, tags, body, root_subject, signal)
     asyncio.run(_send_post_async(bot_token, chat_id, text, image_path))
 
 
