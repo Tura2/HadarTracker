@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+import json
 import logging
 import sys
 
@@ -7,6 +9,7 @@ from hadar_tracker import db, images, notifier
 from hadar_tracker.config import Config, load_config
 from hadar_tracker.models import Post
 from hadar_tracker.scraper import client
+from hadar_tracker.signal import classify_post
 from hadar_tracker.util import now_iso
 
 
@@ -16,9 +19,17 @@ def process_new_posts(
     posts: list[Post],
     download=None,
     send_post=None,
+    classify=None,
 ) -> list[Post]:
-    """Download any attachment, notify, then persist unseen posts — one
-    message each. Returns the posts newly processed.
+    """Download any attachment, classify it into a trade signal, notify, then
+    persist unseen posts — one message each. Returns the posts newly
+    processed.
+
+    Classification (`classify`) runs between download and notify, and is
+    fail-open by contract (classify_post never raises — see signal.py): a
+    classification problem must never block, delay, or duplicate-send a
+    notification, unlike a genuine Telegram/DB failure below, which stays
+    fail-loud exactly as it was in Phase 1.
 
     Notification happens before the DB insert so that if `send_post` raises
     (e.g. a real Telegram API error), the post is NOT marked as seen and will
@@ -26,15 +37,18 @@ def process_new_posts(
     dropped. Earlier posts in the same batch that already succeeded remain
     committed even if a later post's send fails.
 
-    `download` and `send_post` are injected so this is unit-testable without a
-    live network or Telegram. They resolve to the real functions at call time
-    (not as def-time defaults) so callers like run_check can be tested by
-    monkeypatching `notifier.send_post`.
+    `download`, `send_post`, and `classify` are injected so this is
+    unit-testable without a live network, Telegram, or OpenRouter call. They
+    resolve to the real functions at call time (not as def-time defaults) so
+    callers like run_check can be tested by monkeypatching
+    `notifier.send_post` / `hadar_tracker.signal.classify_post`.
     """
     if download is None:
         download = images.download_image
     if send_post is None:
         send_post = notifier.send_post
+    if classify is None:
+        classify = classify_post
 
     new_posts: list[Post] = []
     for post in posts:
@@ -45,6 +59,14 @@ def process_new_posts(
         if post.image_file_name:
             image_local_path = download(post.image_file_name, config.images_dir)
 
+        signal = classify(
+            post,
+            image_local_path,
+            config.openrouter_api_key,
+            config.openrouter_model,
+        )
+        signal_json = json.dumps(dataclasses.asdict(signal)) if signal else None
+
         send_post(
             config.telegram_bot_token,
             config.telegram_chat_id,
@@ -53,6 +75,7 @@ def process_new_posts(
             post.body,
             post.root_subject,
             image_local_path,
+            signal,
         )
         db.insert_post(
             conn,
@@ -67,6 +90,7 @@ def process_new_posts(
             post.image_file_name,
             image_local_path,
             now_iso(),
+            signal_json,
         )
         new_posts.append(post)
 

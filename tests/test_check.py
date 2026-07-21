@@ -5,7 +5,7 @@ import pytest
 
 from hadar_tracker import check, db
 from hadar_tracker.config import Config
-from hadar_tracker.models import Post
+from hadar_tracker.models import Post, Signal
 from hadar_tracker.scraper import client, parse
 
 
@@ -32,7 +32,7 @@ def test_process_inserts_downloads_and_notifies(tmp_path):
     sent = []
     downloaded = []
 
-    def fake_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None):
+    def fake_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None):
         sent.append((subject, tags, body, root_subject, image_path))
 
     def fake_download(msg_file_name, images_dir):
@@ -109,7 +109,7 @@ def test_process_keeps_earlier_successes_when_later_post_send_fails(tmp_path):
     config = make_config(tmp_path)
     sent = []
 
-    def flaky_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None):
+    def flaky_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None):
         sent.append(subject)
         if subject == "second":
             raise RuntimeError("telegram api error")
@@ -141,7 +141,7 @@ def test_run_check_success_path(tmp_path, monkeypatch):
     sent = []
     monkeypatch.setattr(
         "hadar_tracker.notifier.send_post",
-        lambda token, chat_id, subject, tags, body, root_subject=None, image_path=None: sent.append(body),
+        lambda token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None: sent.append(body),
     )
     rc = check.run_check(config)
     assert rc == 0
@@ -254,7 +254,7 @@ def test_run_check_end_to_end_through_real_parser(tmp_path, monkeypatch):
 
     sent = []
 
-    def fake_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None):
+    def fake_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None):
         sent.append((subject, tags, body, root_subject, image_path))
 
     monkeypatch.setattr("hadar_tracker.notifier.send_post", fake_send)
@@ -300,3 +300,64 @@ def test_run_check_end_to_end_through_real_parser(tmp_path, monkeypatch):
     assert image_row["image_local_path"] == expected_path
     assert any(entry[4] == expected_path for entry in sent)
     assert len(sent) == 4
+
+    # No OPENROUTER_API_KEY configured in this test's Config, so
+    # classify_post short-circuits to None for every post — the whole real
+    # pipeline (parser -> check -> db) must stay fully inert for Phase 2
+    # when no key is set, exactly like Phase 1 behaved.
+    signal_rows = conn.execute("SELECT signal_json FROM posts").fetchall()
+    assert all(row["signal_json"] is None for row in signal_rows)
+
+
+def test_process_calls_classify_with_post_image_path_and_config_and_persists_signal(tmp_path):
+    conn = make_conn()
+    config = make_config(tmp_path)
+    calls = []
+
+    def fake_classify(post, image_path, api_key, model):
+        calls.append((post.msg_id, image_path, api_key, model))
+        return Signal(
+            is_signal=True,
+            ticker_mentioned="Aerodrome",
+            ticker_guess="ARDM",
+            action="add",
+            conviction="medium",
+            price_levels="close above 460",
+            rationale="expects breakout",
+        )
+
+    sent = []
+
+    def fake_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None):
+        sent.append(signal)
+
+    posts = [Post("2001", "t", 1, "900", "s", "b", ())]
+    check.process_new_posts(
+        conn, config, posts,
+        download=lambda *a, **k: None,
+        send_post=fake_send,
+        classify=fake_classify,
+    )
+
+    assert calls == [("2001", None, config.openrouter_api_key, config.openrouter_model)]
+    assert sent[0].action == "add"
+    row = conn.execute("SELECT signal_json FROM posts WHERE msg_id='2001'").fetchone()
+    stored = json.loads(row["signal_json"])
+    assert stored["action"] == "add"
+    assert stored["ticker_guess"] == "ARDM"
+
+
+def test_process_persists_null_signal_json_when_classify_returns_none(tmp_path):
+    conn = make_conn()
+    config = make_config(tmp_path)
+
+    posts = [Post("2002", "t", 1, "900", "s", "b", ())]
+    check.process_new_posts(
+        conn, config, posts,
+        download=lambda *a, **k: None,
+        send_post=lambda *a, **k: None,
+        classify=lambda *a, **k: None,
+    )
+
+    row = conn.execute("SELECT signal_json FROM posts WHERE msg_id='2002'").fetchone()
+    assert row["signal_json"] is None
