@@ -91,3 +91,40 @@ def test_parse_raises_when_data_key_missing():
 
 def test_parse_empty_data_returns_empty_list():
     assert parse_posts({"Data": []}) == []
+
+
+def test_parse_reply_thread_transcript_includes_prior_items_up_to_itself():
+    posts = parse_posts(PAYLOAD)
+    reply = next(p for p in posts if p.msg_id == "5002")
+    # L1=900 in the fixture: 5001 (10:32, hadar, root), 5002 (11:00, hadar),
+    # 5003 (11:05, user 9999). 5002's transcript should include itself and
+    # the earlier root, but NOT 5003, which comes after it.
+    assert [ti.posted_at for ti in reply.thread_transcript] == [
+        "2026-07-21T10:32:00", "2026-07-21T11:00:00",
+    ]
+    assert reply.thread_transcript[0].author == "hadar"
+    assert reply.thread_transcript[0].subject == "תל אביב 35"
+    assert reply.thread_transcript[1].body == "מוסיף פוזיציה, גרף מצורף"
+
+
+def test_parse_reply_thread_transcript_includes_other_users_root():
+    posts = parse_posts(PAYLOAD)
+    reply = next(p for p in posts if p.msg_id == "5006")
+    # L1=902's root (5005) is authored by a different user (8888) — proves
+    # the transcript captures cross-user thread items, not just Hadar's own,
+    # mirroring the existing root_subject cross-user invariant above.
+    assert len(reply.thread_transcript) == 2
+    root_item, own_item = reply.thread_transcript
+    assert root_item.author == "other"
+    assert root_item.subject == "פועלים"
+    assert root_item.body == "מה דעתכם על הבנק"
+    assert own_item.author == "hadar"
+    assert own_item.body == "מסכים עם הניתוח, נראה חיובי"
+
+
+def test_parse_root_post_thread_transcript_is_just_itself():
+    posts = parse_posts(PAYLOAD)
+    root = posts[0]  # msg_id 5001, L1=900, the thread's own root
+    assert len(root.thread_transcript) == 1
+    assert root.thread_transcript[0].author == "hadar"
+    assert root.thread_transcript[0].subject == "תל אביב 35"

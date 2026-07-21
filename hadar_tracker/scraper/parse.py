@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
-from hadar_tracker.models import Post
+from hadar_tracker.models import Post, ThreadItem
 
 HADAR_USER_ID = 5609
 
@@ -53,7 +53,13 @@ def parse_posts(payload: dict, user_id: int = HADAR_USER_ID) -> list[Post]:
 
     Filters to items whose User.UserId == user_id, resolves each reply's root
     subject via the L1 thread group (root = the Level==1 sibling, which may be
-    any user), and extracts tickers and the attached image file name.
+    any user), extracts tickers and the attached image file name, and builds
+    each post's thread_transcript: every item sharing its L1 thread group
+    (any user, any level) already present in this same payload with
+    posted_at <= this post's own posted_at, in original payload order. This
+    is "the conversation so far" as Hadar would have seen it when he
+    posted — built entirely from data already in the payload, no extra
+    network calls (see the Phase 2 design spec's data-flow investigation).
     """
     if "Data" not in payload:
         raise ScrapeError("response payload missing 'Data' key — shape changed")
@@ -66,6 +72,25 @@ def parse_posts(payload: dict, user_id: int = HADAR_USER_ID) -> list[Post]:
         if item.get("Level") == 1:
             root_subjects[str(item.get("L1"))] = item.get("subject") or ""
 
+    # Every item (any user), grouped by thread group, in original payload
+    # order — used to build each Hadar post's thread_transcript below.
+    # posted_at is a naive ISO 8601 string, so plain string comparison
+    # ("<=") already gives correct chronological filtering.
+    threads: dict[str, list[ThreadItem]] = {}
+    for item in data:
+        thread_group = str(item.get("L1"))
+        user = item.get("User") or {}
+        author = "hadar" if user.get("UserId") == user_id else "other"
+        threads.setdefault(thread_group, []).append(
+            ThreadItem(
+                author=author,
+                level=int(item.get("Level")),
+                subject=item.get("subject") or "",
+                body=item.get("Msg") or "",
+                posted_at=parse_date(item.get("DateCreated")),
+            )
+        )
+
     posts: list[Post] = []
     for item in data:
         user = item.get("User") or {}
@@ -75,6 +100,11 @@ def parse_posts(payload: dict, user_id: int = HADAR_USER_ID) -> list[Post]:
         level = int(item.get("Level"))
         thread_group = str(item.get("L1"))
         root_subject = root_subjects.get(thread_group) if level > 1 else None
+        posted_at = parse_date(item.get("DateCreated"))
+
+        thread_transcript = tuple(
+            ti for ti in threads.get(thread_group, ()) if ti.posted_at <= posted_at
+        )
 
         has_image = bool(item.get("HasImages")) and bool(item.get("MsgFileName"))
         image_file_name = item.get("MsgFileName") if has_image else None
@@ -82,7 +112,7 @@ def parse_posts(payload: dict, user_id: int = HADAR_USER_ID) -> list[Post]:
         posts.append(
             Post(
                 msg_id=str(item.get("MsgId")),
-                posted_at=parse_date(item.get("DateCreated")),
+                posted_at=posted_at,
                 level=level,
                 thread_group=thread_group,
                 subject=item.get("subject") or "",
@@ -91,6 +121,7 @@ def parse_posts(payload: dict, user_id: int = HADAR_USER_ID) -> list[Post]:
                 root_subject=root_subject,
                 image_file_name=image_file_name,
                 image_local_path=None,
+                thread_transcript=thread_transcript,
             )
         )
 
