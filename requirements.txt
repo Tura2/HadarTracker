@@ -1,0 +1,4 @@
+playwright>=1.44
+python-telegram-bot>=21.0
+beautifulsoup4>=4.12
+pytest>=8.0

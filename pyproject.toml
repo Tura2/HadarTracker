@@ -1,0 +1,9 @@
+[project]
+name = "hadar-tracker"
+version = "0.1.0"
+description = "Scrape, store, and Telegram-notify Hadar's Sponser forum posts (Phase 1)."
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
