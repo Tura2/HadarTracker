@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+import sys
+
 from hadar_tracker import db, images, notifier
-from hadar_tracker.config import Config
+from hadar_tracker.config import Config, load_config
 from hadar_tracker.models import Post
+from hadar_tracker.scraper import client
 from hadar_tracker.util import now_iso
 
 
@@ -67,3 +71,48 @@ def process_new_posts(
         new_posts.append(post)
 
     return new_posts
+
+
+def run_check(config: Config | None = None) -> int:
+    """Run one incremental check. Returns 0 on success, 1 on failure.
+
+    On failure the error is logged AND a Telegram alert is sent AND we return
+    non-zero — the spec's no-silent-failure contract.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    log = logging.getLogger("hadar_tracker.check")
+
+    if config is None:
+        config = load_config()
+
+    conn = db.connect(config.db_path)
+    db.init_db(conn)
+
+    try:
+        posts = client.fetch_posts(user_id=config.user_id, forum_id=config.forum_id)
+    except Exception as exc:  # noqa: BLE001 - fail loudly on ANY scrape error
+        log.error("scrape failed: %s", exc)
+        try:
+            notifier.send_alert(
+                config.telegram_bot_token,
+                config.telegram_chat_id,
+                f"scraper run failed: {exc}",
+            )
+        except Exception as alert_exc:  # noqa: BLE001
+            log.error("failed to send Telegram alert: %s", alert_exc)
+        return 1
+
+    new_posts = process_new_posts(conn, config, posts)
+    log.info("check complete: %d new post(s)", len(new_posts))
+    return 0
+
+
+def main() -> None:
+    sys.exit(run_check())
+
+
+if __name__ == "__main__":
+    main()

@@ -3,6 +3,7 @@ import pytest
 from hadar_tracker import check, db
 from hadar_tracker.config import Config
 from hadar_tracker.models import Post
+from hadar_tracker.scraper import client, parse
 
 
 def make_config(tmp_path):
@@ -128,3 +129,35 @@ def test_process_keeps_earlier_successes_when_later_post_send_fails(tmp_path):
     assert db.count_posts(conn) == 1
     assert db.post_exists(conn, "1001") is True
     assert db.post_exists(conn, "1002") is False
+
+
+def test_run_check_success_path(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    fetched = [Post("2001", "t", 1, "900", "טבע", "brand new post", ("TEVA",))]
+    monkeypatch.setattr(client, "fetch_posts", lambda **k: fetched)
+    sent = []
+    monkeypatch.setattr(
+        "hadar_tracker.notifier.send_post",
+        lambda token, chat_id, subject, tags, body, root_subject=None, image_path=None: sent.append(body),
+    )
+    rc = check.run_check(config)
+    assert rc == 0
+    assert sent == ["brand new post"]
+
+
+def test_run_check_reports_failure_and_alerts(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+
+    def boom(**k):
+        raise parse.ScrapeError("shape changed")
+
+    monkeypatch.setattr(client, "fetch_posts", boom)
+    alerts = []
+    monkeypatch.setattr(
+        "hadar_tracker.notifier.send_alert",
+        lambda token, chat_id, message: alerts.append(message),
+    )
+    rc = check.run_check(config)
+    assert rc == 1
+    assert len(alerts) == 1
+    assert "shape changed" in alerts[0]
