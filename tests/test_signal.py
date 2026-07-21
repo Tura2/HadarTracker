@@ -1,7 +1,7 @@
 import json
 
 from hadar_tracker import signal
-from hadar_tracker.models import Post, Signal
+from hadar_tracker.models import Post, Signal, ThreadItem
 
 
 class FakeResponse:
@@ -136,3 +136,38 @@ def test_classify_post_proceeds_text_only_when_image_unreadable(monkeypatch):
     assert result is not None
     content = fake.calls[0]["json"]["messages"][0]["content"]
     assert len(content) == 1  # text only, image block skipped
+
+
+def test_classify_post_includes_thread_transcript_in_prompt(monkeypatch):
+    """Verify that thread_transcript with multiple ThreadItems is rendered in the LLM prompt."""
+    transcript = (
+        ThreadItem(
+            author="other",
+            level=1,
+            subject="Initial discussion",
+            body="What do you think?",
+            posted_at="2026-07-21T09:00:00",
+        ),
+        ThreadItem(
+            author="hadar",
+            level=2,
+            subject="RE: Initial discussion",
+            body="I'm bullish on ARDM",
+            posted_at="2026-07-21T09:30:00",
+        ),
+    )
+    fake = FakeRequests(
+        FakeResponse(_openrouter_payload({"is_signal": True, "action": "buy", "conviction": "high"}))
+    )
+    monkeypatch.setattr(signal, "requests", fake)
+
+    signal.classify_post(
+        make_post(thread_transcript=transcript),
+        None,
+        api_key="k",
+    )
+
+    # Verify the prompt text contains thread context with author labels
+    prompt_text = fake.calls[0]["json"]["messages"][0]["content"][0]["text"]
+    assert "[Other user] Initial discussion: What do you think?" in prompt_text
+    assert "[Hadar] RE: Initial discussion: I'm bullish on ARDM" in prompt_text

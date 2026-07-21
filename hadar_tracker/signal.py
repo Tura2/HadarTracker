@@ -37,16 +37,16 @@ def classify_post(
     if not api_key:
         return None
 
-    content: list[dict] = [{"type": "text", "text": _build_prompt(post)}]
-    if image_path:
-        try:
-            content.append(_image_content_block(image_path))
-        except OSError as exc:
-            log.warning(
-                "could not read image %s for classification: %s", image_path, exc
-            )
-
     try:
+        content: list[dict] = [{"type": "text", "text": _build_prompt(post)}]
+        if image_path:
+            try:
+                content.append(_image_content_block(image_path))
+            except Exception as exc:  # noqa: BLE001 - catch all image-read errors
+                log.warning(
+                    "could not read image %s for classification: %s", image_path, exc
+                )
+
         response = requests.post(
             OPENROUTER_ENDPOINT,
             headers={
