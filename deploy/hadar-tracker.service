@@ -1,0 +1,11 @@
+[Unit]
+Description=HadarTracker incremental check (fetch -> store -> notify)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Adjust User and WorkingDirectory to match the VPS deployment path.
+User=ubuntu
+WorkingDirectory=/home/ubuntu/HadarTracker
+ExecStart=/home/ubuntu/HadarTracker/deploy/run_check.sh

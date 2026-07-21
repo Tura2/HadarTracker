@@ -1,0 +1,10 @@
+[Unit]
+Description=Run HadarTracker check every 10 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Unit=hadar-tracker.service
+
+[Install]
+WantedBy=timers.target
