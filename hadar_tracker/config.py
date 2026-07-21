@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+# Retained for reference / the throwaway Task-2 inspection script. The app no
+# longer scrapes this HTML page — it hits the JSON endpoint (see scraper/client).
 DEFAULT_FORUM_URL = (
     "https://www.sponser.co.il/ForumViewUserMessages.aspx"
     "?UserId=5609&ForumId=1&IsFull=1"
@@ -15,12 +17,12 @@ class ConfigError(Exception):
 
 @dataclass(frozen=True)
 class Config:
-    forum_url: str
     db_path: str
-    charts_dir: str
+    images_dir: str
     telegram_bot_token: str
     telegram_chat_id: str
-    headless: bool
+    user_id: int
+    forum_id: int
 
 
 def load_config(env: dict[str, str] | None = None) -> Config:
@@ -47,10 +49,10 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         )
 
     return Config(
-        forum_url=source.get("FORUM_URL", DEFAULT_FORUM_URL),
         db_path=source.get("DB_PATH", "data/hadar.sqlite3"),
-        charts_dir=source.get("CHARTS_DIR", "data/charts"),
+        images_dir=source.get("IMAGES_DIR", "data/images"),
         telegram_bot_token=token,
         telegram_chat_id=chat_id,
-        headless=source.get("HEADLESS", "1") != "0",
+        user_id=int(source.get("USER_ID", "5609")),
+        forum_id=int(source.get("FORUM_ID", "1")),
     )

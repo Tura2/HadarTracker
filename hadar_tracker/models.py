@@ -5,16 +5,22 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Post:
-    """A single scraped forum post.
+    """A single forum post parsed from the JSON stream endpoint.
 
-    `chart_selector` is the CSS selector for the embedded chart image (set at
-    parse time when `has_chart` is True); `chart_image_path` is filled later by
-    the caller once the chart has been screenshotted to disk.
+    `tags` holds the stock tickers mentioned (possibly empty). `root_subject`
+    is filled only for replies (`level > 1`) — the subject of the thread's
+    `level == 1` root. `image_file_name` is the `MsgFileName` of an attached
+    picture (when `HasImages` is set); `image_local_path` is filled later by
+    the caller once the attachment has been downloaded to disk.
     """
 
-    post_id: str
+    msg_id: str
     posted_at: str
-    raw_text: str
-    has_chart: bool
-    chart_selector: str | None = None
-    chart_image_path: str | None = None
+    level: int
+    thread_group: str
+    subject: str
+    body: str
+    tags: tuple[str, ...]
+    root_subject: str | None = None
+    image_file_name: str | None = None
+    image_local_path: str | None = None
