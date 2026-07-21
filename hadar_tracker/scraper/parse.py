@@ -56,10 +56,13 @@ def parse_posts(payload: dict, user_id: int = HADAR_USER_ID) -> list[Post]:
     any user), extracts tickers and the attached image file name, and builds
     each post's thread_transcript: every item sharing its L1 thread group
     (any user, any level) already present in this same payload with
-    posted_at <= this post's own posted_at, in original payload order. This
-    is "the conversation so far" as Hadar would have seen it when he
-    posted — built entirely from data already in the payload, no extra
-    network calls (see the Phase 2 design spec's data-flow investigation).
+    posted_at <= this post's own posted_at, explicitly sorted chronologically
+    by posted_at (payload order is NOT guaranteed to be chronological — e.g.
+    history.py's page_id=0 bucket is a "recently bumped" mix of dates that
+    backfill.py feeds straight into this function). This is "the
+    conversation so far" as Hadar would have seen it when he posted — built
+    entirely from data already in the payload, no extra network calls (see
+    the Phase 2 design spec's data-flow investigation).
     """
     if "Data" not in payload:
         raise ScrapeError("response payload missing 'Data' key — shape changed")
@@ -72,10 +75,11 @@ def parse_posts(payload: dict, user_id: int = HADAR_USER_ID) -> list[Post]:
         if item.get("Level") == 1:
             root_subjects[str(item.get("L1"))] = item.get("subject") or ""
 
-    # Every item (any user), grouped by thread group, in original payload
-    # order — used to build each Hadar post's thread_transcript below.
-    # posted_at is a naive ISO 8601 string, so plain string comparison
-    # ("<=") already gives correct chronological filtering.
+    # Every item (any user), grouped by thread group — used to build each
+    # Hadar post's thread_transcript below. posted_at is a naive ISO 8601
+    # string, so plain string comparison ("<=" for filtering, and as the
+    # sort key) already gives correct chronological ordering. Payload order
+    # itself is NOT trusted to already be chronological (see docstring).
     threads: dict[str, list[ThreadItem]] = {}
     for item in data:
         thread_group = str(item.get("L1"))
@@ -103,7 +107,10 @@ def parse_posts(payload: dict, user_id: int = HADAR_USER_ID) -> list[Post]:
         posted_at = parse_date(item.get("DateCreated"))
 
         thread_transcript = tuple(
-            ti for ti in threads.get(thread_group, ()) if ti.posted_at <= posted_at
+            sorted(
+                (ti for ti in threads.get(thread_group, ()) if ti.posted_at <= posted_at),
+                key=lambda ti: ti.posted_at,
+            )
         )
 
         has_image = bool(item.get("HasImages")) and bool(item.get("MsgFileName"))

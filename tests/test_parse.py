@@ -128,3 +128,46 @@ def test_parse_root_post_thread_transcript_is_just_itself():
     assert len(root.thread_transcript) == 1
     assert root.thread_transcript[0].author == "hadar"
     assert root.thread_transcript[0].subject == "תל אביב 35"
+
+
+def test_parse_thread_transcript_is_sorted_even_when_payload_order_is_not():
+    # history.py's page_id=0 bucket is documented as mixed-date/non-chronological,
+    # and backfill.py feeds that payload straight into parse_posts, so
+    # thread_transcript can't just trust payload order — it must be explicitly
+    # sorted by posted_at. Here the later post (12:00) appears FIRST in the
+    # payload and the earlier root (09:00) appears SECOND.
+    payload = {
+        "Data": [
+            {
+                "MsgId": 7002,
+                "DateCreated": "21/07/26 | 12:00",
+                "Level": 2,
+                "L1": 950,
+                "subject": "",
+                "Msg": "second reply, listed first in payload",
+                "Tags": "",
+                "HasImages": 0,
+                "MsgFileName": None,
+                "User": {"UserId": 5609},
+            },
+            {
+                "MsgId": 7001,
+                "DateCreated": "21/07/26 | 09:00",
+                "Level": 1,
+                "L1": 950,
+                "subject": "נושא",
+                "Msg": "root post, listed second in payload but earlier",
+                "Tags": "",
+                "HasImages": 0,
+                "MsgFileName": None,
+                "User": {"UserId": 5609},
+            },
+        ],
+        "NumberOfPages": 0,
+        "IsMoreMsg": 0,
+    }
+    posts = parse_posts(payload)
+    reply = next(p for p in posts if p.msg_id == "7002")
+    assert [ti.posted_at for ti in reply.thread_transcript] == [
+        "2026-07-21T09:00:00", "2026-07-21T12:00:00",
+    ]
