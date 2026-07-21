@@ -1,0 +1,54 @@
+{
+  "Data": [
+    {
+      "MsgId": 5001,
+      "DateCreated": "21/07/26 | 10:32",
+      "Level": 1,
+      "L1": 900,
+      "subject": "תל אביב 35",
+      "Msg": "פתיחה חיובית בשוק",
+      "Tags": "TA35",
+      "HasImages": 0,
+      "MsgFileName": null,
+      "User": {"UserId": 5609}
+    },
+    {
+      "MsgId": 5002,
+      "DateCreated": "21/07/26 | 11:00",
+      "Level": 2,
+      "L1": 900,
+      "subject": "",
+      "Msg": "מוסיף פוזיציה, גרף מצורף",
+      "Tags": "",
+      "HasImages": 1,
+      "MsgFileName": "c310bc13-abcd.gif",
+      "User": {"UserId": 5609}
+    },
+    {
+      "MsgId": 5003,
+      "DateCreated": "21/07/26 | 11:05",
+      "Level": 2,
+      "L1": 900,
+      "subject": "",
+      "Msg": "תגובה של משתמש אחר",
+      "Tags": "",
+      "HasImages": 0,
+      "MsgFileName": null,
+      "User": {"UserId": 9999}
+    },
+    {
+      "MsgId": 5004,
+      "DateCreated": "21/07/26 | 12:00",
+      "Level": 1,
+      "L1": 901,
+      "subject": "טבע",
+      "Msg": "קונה טבע היום",
+      "Tags": "TEVA, ICL",
+      "HasImages": 0,
+      "MsgFileName": null,
+      "User": {"UserId": 5609}
+    }
+  ],
+  "NumberOfPages": 0,
+  "IsMoreMsg": 0
+}
