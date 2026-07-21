@@ -47,6 +47,30 @@
       "HasImages": 0,
       "MsgFileName": null,
       "User": {"UserId": 5609}
+    },
+    {
+      "MsgId": 5005,
+      "DateCreated": "21/07/26 | 13:00",
+      "Level": 1,
+      "L1": 902,
+      "subject": "פועלים",
+      "Msg": "מה דעתכם על הבנק",
+      "Tags": "",
+      "HasImages": 0,
+      "MsgFileName": null,
+      "User": {"UserId": 8888}
+    },
+    {
+      "MsgId": 5006,
+      "DateCreated": "21/07/26 | 13:10",
+      "Level": 2,
+      "L1": 902,
+      "subject": "",
+      "Msg": "מסכים עם הניתוח, נראה חיובי",
+      "Tags": "",
+      "HasImages": 0,
+      "MsgFileName": null,
+      "User": {"UserId": 5609}
     }
   ],
   "NumberOfPages": 0,

@@ -37,7 +37,7 @@ def test_extract_tags_from_list_of_strings_and_dicts():
 
 def test_parse_filters_to_hadar_only():
     posts = parse_posts(PAYLOAD)
-    assert [p.msg_id for p in posts] == ["5001", "5002", "5004"]
+    assert [p.msg_id for p in posts] == ["5001", "5002", "5004", "5006"]
 
 
 def test_parse_root_post_fields():
@@ -68,6 +68,20 @@ def test_parse_multi_ticker_post():
     teva = posts[2]
     assert teva.msg_id == "5004"
     assert teva.tags == ("TEVA", "ICL")
+
+
+def test_parse_reply_resolves_root_subject_when_root_is_another_user():
+    # Thread L1=900 root is authored by Hadar, so a naive implementation that
+    # only scans Hadar's own items to build root_subjects would still pass
+    # there. This thread (L1=902) has its Level==1 root authored by a
+    # *different* user (8888), with Hadar only posting the Level>1 reply
+    # (5006). This proves root_subjects is built from ALL items, not just
+    # Hadar's filtered posts.
+    posts = parse_posts(PAYLOAD)
+    reply = next(p for p in posts if p.msg_id == "5006")
+    assert reply.level == 2
+    assert reply.thread_group == "902"
+    assert reply.root_subject == "פועלים"
 
 
 def test_parse_raises_when_data_key_missing():
