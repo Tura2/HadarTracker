@@ -38,43 +38,45 @@ class FakeBot:
 
 
 def test_format_message_root_post_with_tags():
-    # Tags render in a footer block after the body, not between subject and
-    # reply-context — see format_message's docstring for why (a tag can be a
-    # false-positive match against ordinary body text, and having it sit
-    # between subject and reply-context broke up the reading flow right
-    # when a reader needs that context most).
+    # Tags render in a footer block after the body, not between title and
+    # reply-context — see format_message's docstring for why (a tag can be
+    # a real stock that isn't actually what's discussed, and having it sit
+    # in the middle broke up the reading flow right when a reader needs
+    # the reply-context most).
     out = notifier.format_message("טבע", ("TEVA", "ICL"), "קונה טבע")
-    assert out == sentinel("טבע\n\nקונה טבע\n\n🏷 TEVA, ICL")
+    assert out == sentinel("<b>כותרת:</b> טבע\n\n<b>תוכן:</b>\nקונה טבע\n\n🏷 TEVA, ICL")
 
 
-def test_format_message_reply_has_bold_hebrew_context_line():
-    out = notifier.format_message("", (), "מוסיף", root_subject="תל אביב 35")
-    assert out == sentinel("↩️ <b>הגיב ל</b>: תל אביב 35\n\nמוסיף")
+def test_format_message_reply_context_comes_before_title():
+    out = notifier.format_message("הכותרת שלי", (), "מוסיף", root_subject="תל אביב 35")
+    assert out == sentinel(
+        "<b>הגיב ל:</b> תל אביב 35\n<b>כותרת:</b> הכותרת שלי\n\n<b>תוכן:</b>\nמוסיף"
+    )
 
 
 def test_format_message_body_only():
-    assert notifier.format_message("", (), "just body") == sentinel("just body")
+    assert notifier.format_message("", (), "just body") == sentinel("<b>תוכן:</b>\njust body")
 
 
 def test_format_message_replaces_known_emoji_code_in_body():
     out = notifier.format_message("", (), "אתה באמת ביביסט ללא מוח.|30|")
-    assert out == sentinel("אתה באמת ביביסט ללא מוח.😉")
+    assert out == sentinel("<b>תוכן:</b>\nאתה באמת ביביסט ללא מוח.😉")
 
 
 def test_format_message_replaces_repeated_emoji_codes():
     out = notifier.format_message("", (), "וואלה|35||35|")
-    assert out == sentinel("וואלה😆😆")
+    assert out == sentinel("<b>תוכן:</b>\nוואלה😆😆")
 
 
 def test_format_message_replaces_emoji_code_in_subject_and_root_subject():
     out = notifier.format_message("כותרת|1|", (), "גוף", root_subject="תגובה|36|")
-    assert out.splitlines()[0] == "כותרת🙂"
-    assert "↩️ <b>הגיב ל</b>: תגובה❤️" in out
+    assert out.splitlines()[0] == "<b>הגיב ל:</b> תגובה❤️"
+    assert "<b>כותרת:</b> כותרת🙂" in out
 
 
 def test_format_message_drops_unknown_emoji_code():
     out = notifier.format_message("", (), "טקסט|99999|סוף")
-    assert out == sentinel("טקסטסוף")
+    assert out == sentinel("<b>תוכן:</b>\nטקסטסוף")
 
 
 def test_format_message_escapes_html_special_characters_in_body():
@@ -176,19 +178,19 @@ def _signal(**overrides):
 def test_format_message_appends_signal_section_when_is_signal_true():
     out = notifier.format_message("s", (), "b", signal=_signal())
     assert out == sentinel(
-        's\n\nb\n\n🤖 Signal: ADD — ARDM 🟡\n'
+        '<b>כותרת:</b> s\n\n<b>תוכן:</b>\nb\n\n🤖 Signal: ADD — ARDM 🟡\n'
         '   "close above 460 — expects breakout"'
     )
 
 
 def test_format_message_omits_signal_section_when_is_signal_false():
     out = notifier.format_message("s", (), "b", signal=_signal(is_signal=False))
-    assert out == sentinel("s\n\nb")
+    assert out == sentinel("<b>כותרת:</b> s\n\n<b>תוכן:</b>\nb")
 
 
 def test_format_message_omits_signal_section_when_signal_is_none():
     out = notifier.format_message("s", (), "b", signal=None)
-    assert out == sentinel("s\n\nb")
+    assert out == sentinel("<b>כותרת:</b> s\n\n<b>תוכן:</b>\nb")
 
 
 def test_format_message_signal_without_ticker_guess_omits_dash():
@@ -208,7 +210,7 @@ def test_format_message_conviction_ball_low_is_red():
 
 def test_format_message_after_hours_label_is_first_line():
     out = notifier.format_message("s", (), "b", after_hours=True)
-    assert out == sentinel("🌙 After Hours\ns\n\nb")
+    assert out == sentinel("🌙 After Hours\n<b>כותרת:</b> s\n\n<b>תוכן:</b>\nb")
 
 
 def test_format_message_no_after_hours_label_by_default():

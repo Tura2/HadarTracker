@@ -128,15 +128,17 @@ review.
   `mark_offhours_check_ran` (backed by `db.get_meta`/`set_meta`) throttle off-hours work to once per
   `OFFHOURS_CHECK_INTERVAL_SECONDS` (1 hour) — see check.py's `run_check` for why this lives in code
   rather than a second cron/systemd schedule.
-- `notifier.py` — Telegram sending, via HTML parse mode (required for the bold reply label below).
-  `format_message` (pure) builds the text layout (🌙 after-hours label → subject →
-  ↩️ **הגיב ל** reply-context (bold) → blank line → body → blank line → 🏷 tags → 🤖 signal
-  section). Tags and the signal deliberately sit in a footer AFTER body, not between subject and
-  reply-context — a tag can be a false-positive match against ordinary text in the body (a real
-  live example: an idiom containing "שמיים" (heaven) got tagged against an unrelated security),
-  and having it sit in the middle broke up the subject→reply-context→body reading flow right when
-  a reader needs that context most. Signal conviction renders as a ball emoji (🟢/🟡/🔴 for
-  high/medium/low), not text. `_replace_emoji_codes` converts
+- `notifier.py` — Telegram sending, via HTML parse mode (required for the bold labels below).
+  `format_message` (pure) builds the text layout (🌙 after-hours label → **הגיב ל:** reply-context
+  (bold, when present) → **כותרת:** title (bold) → blank line → **תוכן:** label → body → blank
+  line → 🏷 tags → 🤖 signal section). Every section is explicitly labeled in Hebrew rather than
+  left positionally implicit, and reply-context comes BEFORE title — you read what a post is
+  responding to before its own title. Tags and the signal deliberately sit in a footer AFTER body,
+  not between title and reply-context — a tag can be a real stock that isn't actually what's being
+  discussed (a real live example: an idiom containing "שמיים" (heaven) tagged an unrelated stock
+  by that name), and having it sit in the middle broke up the reply-context→title→body reading
+  flow right when a reader needs that context most. Signal conviction renders as a ball emoji
+  (🟢/🟡/🔴 for high/medium/low), not text. `_replace_emoji_codes` converts
   the forum's raw `|NN|` smiley placeholders (the site resolves these client-side via a
   `var ICONS` table to `<img>` tags — `https://www.sponser.co.il/Images/{filename}` — that the
   JSON API never does) into real emoji, hand-mapped from the actual smiley images; unrecognized

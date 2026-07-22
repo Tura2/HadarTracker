@@ -109,17 +109,21 @@ def format_message(
     """Build the notification text for a post, sent with Telegram's HTML
     parse mode (see send_post/_send_post_async).
 
-    Layout — subject, reply-context, and body flow together uninterrupted
-    (tags used to sit between subject and reply-context, which read as
-    noise breaking up the story right when a reader needs the reply
-    context to understand the subject/body — see the live example that
-    prompted this reorder, a false-positive ticker tag matched from an
-    idiom in the body, sitting right in the middle of the message); tags
-    and the signal move to a single footer block after body instead:
+    Layout — explicit labels on every section (a reader needs to know
+    at a glance which line is the reply-context, the title, or the body;
+    an earlier unlabeled version left the subject's role ambiguous), with
+    reply-context BEFORE title — you read what a post is responding to
+    before its own title, not after. Tags and the signal sit in a single
+    footer block after body, not between title and reply-context — a tag
+    can be a real stock that isn't actually what's being discussed (a real
+    live example: an idiom containing "שמיים" tagged an unrelated stock by
+    that name), and having it sit in the middle broke up the reading flow
+    right when a reader needs the reply-context most:
         🌙 After Hours
-        <subject>
-        ↩️ <b>הגיב ל</b>: <root_subject>
+        <b>הגיב ל:</b> <root_subject>
+        <b>כותרת:</b> <subject>
 
+        <b>תוכן:</b>
         <body>
 
         🏷 TEVA, ICL
@@ -137,7 +141,7 @@ def format_message(
     are run through `_replace_emoji_codes` first, so the forum's raw "|NN|"
     smiley placeholders render as real emoji instead of literal pipe-digits,
     then HTML-escaped (`_esc`) since the message is sent as HTML — required
-    for the `הגיב ל` label to render bold rather than as literal `<b>` tags.
+    for the labels to render bold rather than as literal `<b>` tags.
     `thread_url` (build one with notify_filter... see check.py) renders as a
     clickable "🔗 Link" line — real trailing content that, as a side effect,
     also keeps the body from ever being the message's literal last line (see
@@ -147,11 +151,12 @@ def format_message(
     lines: list[str] = []
     if after_hours:
         lines.append("🌙 After Hours")
-    if subject:
-        lines.append(_esc(_replace_emoji_codes(subject)))
     if root_subject:
-        lines.append("↩️ <b>הגיב ל</b>: " + _esc(_replace_emoji_codes(root_subject)))
+        lines.append("<b>הגיב ל:</b> " + _esc(_replace_emoji_codes(root_subject)))
+    if subject:
+        lines.append("<b>כותרת:</b> " + _esc(_replace_emoji_codes(subject)))
     lines.append("")
+    lines.append("<b>תוכן:</b>")
     lines.append(_esc(_replace_emoji_codes(body)))
 
     footer: list[str] = []
