@@ -109,15 +109,20 @@ def format_message(
     """Build the notification text for a post, sent with Telegram's HTML
     parse mode (see send_post/_send_post_async).
 
-    Layout (each present part on its own line, then a blank line, then body,
-    then an optional trailing signal section, then a trailing link line):
+    Layout — subject, reply-context, and body flow together uninterrupted
+    (tags used to sit between subject and reply-context, which read as
+    noise breaking up the story right when a reader needs the reply
+    context to understand the subject/body — see the live example that
+    prompted this reorder, a false-positive ticker tag matched from an
+    idiom in the body, sitting right in the middle of the message); tags
+    and the signal move to a single footer block after body instead:
         🌙 After Hours
         <subject>
-        🏷 TEVA, ICL
         ↩️ <b>הגיב ל</b>: <root_subject>
 
         <body>
 
+        🏷 TEVA, ICL
         🤖 Signal: ADD — DJIN 🟡
            "close above 460 — breakout"
 
@@ -144,16 +149,21 @@ def format_message(
         lines.append("🌙 After Hours")
     if subject:
         lines.append(_esc(_replace_emoji_codes(subject)))
-    if tags:
-        lines.append("🏷 " + ", ".join(_esc(t) for t in tags))
     if root_subject:
         lines.append("↩️ <b>הגיב ל</b>: " + _esc(_replace_emoji_codes(root_subject)))
     lines.append("")
     lines.append(_esc(_replace_emoji_codes(body)))
+
+    footer: list[str] = []
+    if tags:
+        footer.append("🏷 " + ", ".join(_esc(t) for t in tags))
     signal_section = _build_signal_section(signal)
     if signal_section:
+        footer.append(signal_section)
+    if footer:
         lines.append("")
-        lines.append(signal_section)
+        lines.extend(footer)
+
     result = "\n".join(lines).strip()
     if thread_url:
         result += '\n\n🔗 <a href="' + html.escape(thread_url, quote=True) + '">Link</a>'

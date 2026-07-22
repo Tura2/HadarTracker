@@ -38,8 +38,13 @@ class FakeBot:
 
 
 def test_format_message_root_post_with_tags():
+    # Tags render in a footer block after the body, not between subject and
+    # reply-context — see format_message's docstring for why (a tag can be a
+    # false-positive match against ordinary body text, and having it sit
+    # between subject and reply-context broke up the reading flow right
+    # when a reader needs that context most).
     out = notifier.format_message("טבע", ("TEVA", "ICL"), "קונה טבע")
-    assert out == sentinel("טבע\n🏷 TEVA, ICL\n\nקונה טבע")
+    assert out == sentinel("טבע\n\nקונה טבע\n\n🏷 TEVA, ICL")
 
 
 def test_format_message_reply_has_bold_hebrew_context_line():
