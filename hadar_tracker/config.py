@@ -26,6 +26,11 @@ class Config:
     openrouter_api_key: str | None = None
     openrouter_model: str = "anthropic/claude-sonnet-4.5"
     openrouter_vision_model: str | None = None
+    # Extra recipients for POST notifications only — never error alerts,
+    # which always go to telegram_chat_id alone (see check.py's alert()).
+    # Lets more people subscribe to Hadar's posts without also being woken
+    # up by a scraper failure that's the admin's problem to fix, not theirs.
+    telegram_extra_chat_ids: tuple[str, ...] = ()
 
 
 def load_config(env: dict[str, str] | None = None) -> Config:
@@ -54,6 +59,12 @@ def load_config(env: dict[str, str] | None = None) -> Config:
             "missing required environment variables: " + ", ".join(missing)
         )
 
+    extra_chat_ids = tuple(
+        cid.strip()
+        for cid in source.get("TELEGRAM_EXTRA_CHAT_IDS", "").split(",")
+        if cid.strip()
+    )
+
     return Config(
         db_path=source.get("DB_PATH", "data/hadar.sqlite3"),
         images_dir=source.get("IMAGES_DIR", "data/images"),
@@ -64,4 +75,5 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         openrouter_api_key=source.get("OPENROUTER_API_KEY") or None,
         openrouter_model=source.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5"),
         openrouter_vision_model=source.get("OPENROUTER_VISION_MODEL") or None,
+        telegram_extra_chat_ids=extra_chat_ids,
     )

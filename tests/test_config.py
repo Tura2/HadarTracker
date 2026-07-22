@@ -63,3 +63,29 @@ def test_load_config_does_not_require_openrouter_api_key():
     env = {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123"}
     config = load_config(env)  # must not raise
     assert config.openrouter_api_key is None
+
+
+def test_load_config_extra_chat_ids_defaults_to_empty():
+    env = {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123"}
+    config = load_config(env)
+    assert config.telegram_extra_chat_ids == ()
+
+
+def test_load_config_parses_comma_separated_extra_chat_ids():
+    env = {
+        "TELEGRAM_BOT_TOKEN": "tok",
+        "TELEGRAM_CHAT_ID": "123",
+        "TELEGRAM_EXTRA_CHAT_IDS": "456, 789,101",
+    }
+    config = load_config(env)
+    assert config.telegram_extra_chat_ids == ("456", "789", "101")
+
+
+def test_load_config_ignores_blank_entries_in_extra_chat_ids():
+    env = {
+        "TELEGRAM_BOT_TOKEN": "tok",
+        "TELEGRAM_CHAT_ID": "123",
+        "TELEGRAM_EXTRA_CHAT_IDS": "456,,  ,789",
+    }
+    config = load_config(env)
+    assert config.telegram_extra_chat_ids == ("456", "789")

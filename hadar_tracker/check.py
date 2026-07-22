@@ -13,6 +13,17 @@ from hadar_tracker.signal import classify_post
 from hadar_tracker.util import now_iso
 
 
+def _notify_chat_ids(config: Config) -> tuple[str, ...]:
+    """Every chat that should receive POST notifications — the primary
+    telegram_chat_id plus any telegram_extra_chat_ids, deduplicated. Error
+    alerts never use this: they go to config.telegram_chat_id alone (see
+    run_check's `alert` helper) — someone subscribing to Hadar's posts
+    shouldn't also get woken up by a scraper failure that's the admin's
+    problem, not theirs.
+    """
+    return tuple(dict.fromkeys((config.telegram_chat_id, *config.telegram_extra_chat_ids)))
+
+
 def _flush_pending(conn, config: Config, send_post) -> None:
     """Send anything queued from a previous run (notified=0) — a post that
     passed should_notify but was discovered outside 09:30-17:30 Israel time,
@@ -23,18 +34,19 @@ def _flush_pending(conn, config: Config, send_post) -> None:
     """
     for row in db.fetch_pending_posts(conn):
         signal = Signal(**json.loads(row["signal_json"])) if row["signal_json"] else None
-        send_post(
-            config.telegram_bot_token,
-            config.telegram_chat_id,
-            row["subject"],
-            tuple(json.loads(row["tags"])),
-            row["body"],
-            row["root_subject"],
-            row["image_local_path"],
-            signal,
-            True,
-            notifier.build_thread_url(config.forum_id, row["msg_id"]),
-        )
+        for chat_id in _notify_chat_ids(config):
+            send_post(
+                config.telegram_bot_token,
+                chat_id,
+                row["subject"],
+                tuple(json.loads(row["tags"])),
+                row["body"],
+                row["root_subject"],
+                row["image_local_path"],
+                signal,
+                True,
+                notifier.build_thread_url(config.forum_id, row["msg_id"]),
+            )
         db.mark_notified(conn, row["msg_id"])
 
 
@@ -119,18 +131,19 @@ def process_new_posts(
         bucket = notify_filter.classify_bucket(post, conn)
         notify = notify_filter.should_notify(bucket, post, signal)
         if notify and market_open:
-            send_post(
-                config.telegram_bot_token,
-                config.telegram_chat_id,
-                post.subject,
-                post.tags,
-                post.body,
-                post.root_subject,
-                image_local_path,
-                signal,
-                notify_filter.is_after_hours(post.posted_at),
-                notifier.build_thread_url(config.forum_id, post.msg_id),
-            )
+            for chat_id in _notify_chat_ids(config):
+                send_post(
+                    config.telegram_bot_token,
+                    chat_id,
+                    post.subject,
+                    post.tags,
+                    post.body,
+                    post.root_subject,
+                    image_local_path,
+                    signal,
+                    notify_filter.is_after_hours(post.posted_at),
+                    notifier.build_thread_url(config.forum_id, post.msg_id),
+                )
         db.insert_post(
             conn,
             post.msg_id,

@@ -1,5 +1,6 @@
 import json
 import pathlib
+from dataclasses import replace as dataclasses_replace
 
 import pytest
 
@@ -199,6 +200,42 @@ def test_process_passes_thread_url_built_from_forum_id_and_msg_id(tmp_path):
     assert sent == ["https://www.sponser.co.il/Forum.aspx?ForumId=1&MsgId=1001"]
 
 
+def test_process_sends_to_every_notify_chat_id(tmp_path):
+    config = dataclasses_replace(make_config(tmp_path), telegram_extra_chat_ids=("99", "100"))
+    conn = make_conn()
+    sent_chat_ids = []
+
+    def fake_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None, after_hours=False, thread_url=None):
+        sent_chat_ids.append(chat_id)
+
+    posts = [Post("1001", "2026-01-05T10:00:00", 1, "900", "s", "b", ())]
+    check.process_new_posts(
+        conn, config, posts,
+        download=lambda *a, **k: None,
+        send_post=fake_send,
+    )
+
+    assert sent_chat_ids == ["42", "99", "100"]
+
+
+def test_process_dedupes_notify_chat_ids_when_extra_matches_primary(tmp_path):
+    config = dataclasses_replace(make_config(tmp_path), telegram_extra_chat_ids=("42", "99"))
+    conn = make_conn()
+    sent_chat_ids = []
+
+    def fake_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None, after_hours=False, thread_url=None):
+        sent_chat_ids.append(chat_id)
+
+    posts = [Post("1001", "2026-01-05T10:00:00", 1, "900", "s", "b", ())]
+    check.process_new_posts(
+        conn, config, posts,
+        download=lambda *a, **k: None,
+        send_post=fake_send,
+    )
+
+    assert sent_chat_ids == ["42", "99"]  # "42" not repeated
+
+
 def test_process_holds_post_when_market_closed_instead_of_sending(tmp_path):
     conn = make_conn()
     config = make_config(tmp_path)
@@ -296,6 +333,28 @@ def test_process_flush_passes_thread_url_for_pending_post(tmp_path):
     assert sent == ["https://www.sponser.co.il/Forum.aspx?ForumId=1&MsgId=1001"]
 
 
+def test_process_flush_sends_to_every_notify_chat_id(tmp_path):
+    config = dataclasses_replace(make_config(tmp_path), telegram_extra_chat_ids=("99",))
+    conn = make_conn()
+    db.insert_post(
+        conn, "1001", "2026-01-05T22:00:00", 1, "900", None, "s", "b", (),
+        None, None, "2026-01-05T22:00:00", signal_json=None, notified=False,
+    )
+    sent_chat_ids = []
+
+    def fake_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None, after_hours=False, thread_url=None):
+        sent_chat_ids.append(chat_id)
+
+    check.process_new_posts(
+        conn, config, [],
+        download=lambda *a, **k: None,
+        send_post=fake_send,
+        market_open=True,
+    )
+
+    assert sent_chat_ids == ["42", "99"]
+
+
 def test_process_does_not_flush_pending_posts_while_market_still_closed(tmp_path):
     conn = make_conn()
     config = make_config(tmp_path)
@@ -331,6 +390,27 @@ def test_run_check_success_path(tmp_path, monkeypatch):
     rc = check.run_check(config)
     assert rc == 0
     assert sent == ["brand new post"]
+
+
+def test_run_check_error_alert_only_goes_to_primary_chat_id(tmp_path, monkeypatch):
+    # Someone subscribing via telegram_extra_chat_ids gets Hadar's posts,
+    # not the admin's scraper-failure alerts — those stay on telegram_chat_id
+    # alone, regardless of how many extra recipients are configured.
+    config = dataclasses_replace(make_config(tmp_path), telegram_extra_chat_ids=("99", "100"))
+    monkeypatch.setattr(notify_filter, "is_market_hours_now", lambda: True)
+
+    def boom(**k):
+        raise parse.ScrapeError("shape changed")
+
+    monkeypatch.setattr(client, "fetch_posts", boom)
+    alert_calls = []
+    monkeypatch.setattr(
+        "hadar_tracker.notifier.send_alert",
+        lambda token, chat_id, message: alert_calls.append(chat_id),
+    )
+    rc = check.run_check(config)
+    assert rc == 1
+    assert alert_calls == ["42"]
 
 
 def test_run_check_reports_failure_and_alerts(tmp_path, monkeypatch):

@@ -106,6 +106,9 @@ review.
   backfill) that don't use Telegram — construct a `Config` directly in a script if you need to
   bypass this for a Telegram-free run. `OPENROUTER_MODEL` defaults to `anthropic/claude-sonnet-4.5`
   in code, but this deployment's `.env` overrides it to `deepseek/deepseek-v4-flash`.
+  `telegram_extra_chat_ids` (from the comma-separated `TELEGRAM_EXTRA_CHAT_IDS`) are additional
+  recipients for POST notifications only — see `check.py`'s `_notify_chat_ids`; error alerts
+  always go to `telegram_chat_id` alone, never these.
 - `db.py` — all SQLite access (single-writer, single-file). `insert_post` is `INSERT OR IGNORE`
   returning whether a row was actually new — this is what makes both `check.py` and `backfill.py`
   idempotent/resumable; there is no separate upsert path. The `notified` column (default 1) backs
@@ -159,9 +162,14 @@ review.
 - `check.py` — the live incremental job. `process_new_posts` sends the Telegram notification
   **before** persisting to the DB (not the other way around) — if `send_post` raises, the post is
   deliberately left unmarked-as-seen so it's retried next run instead of the notification being
-  silently and permanently lost. A post that `should_notify` but arrives while `market_open` is
-  False is held (`notified=False`) instead of sent; `_flush_pending` sends every held post, each
-  labeled after-hours, at the start of the next run where the market is open. `run_check` computes
+  silently and permanently lost. `_notify_chat_ids` fans a post notification out to
+  `config.telegram_chat_id` plus every `telegram_extra_chat_ids` (deduplicated) — used both here
+  and in `_flush_pending`; `run_check`'s error-alert path deliberately does NOT use this and only
+  ever targets `telegram_chat_id`, so subscribing via an extra chat id gets Hadar's posts without
+  also getting woken up by an admin-only scraper failure. A post that `should_notify` but arrives
+  while `market_open` is False is held (`notified=False`) instead of sent; `_flush_pending` sends
+  every held post, each labeled after-hours, at the start of the next run where the market is
+  open. `run_check` computes
   `market_open` from `notify_filter.is_market_hours_now()` and wraps DB setup, the scrape call,
   *and* `process_new_posts` each in the same fail-loud contract (log + Telegram alert + non-zero
   exit) — this covers the whole run, not just the scrape step, since a Telegram/download error on a
