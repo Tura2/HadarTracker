@@ -3,7 +3,7 @@ import pathlib
 
 import pytest
 
-from hadar_tracker import check, db
+from hadar_tracker import check, db, notify_filter
 from hadar_tracker.config import Config
 from hadar_tracker.models import Post, Signal
 from hadar_tracker.scraper import client, parse
@@ -32,7 +32,7 @@ def test_process_inserts_downloads_and_notifies(tmp_path):
     sent = []
     downloaded = []
 
-    def fake_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None):
+    def fake_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None, after_hours=False, thread_url=None):
         sent.append((subject, tags, body, root_subject, image_path))
 
     def fake_download(msg_file_name, images_dir):
@@ -40,8 +40,8 @@ def test_process_inserts_downloads_and_notifies(tmp_path):
         return f"{images_dir}/{msg_file_name}"
 
     posts = [
-        Post("1001", "t1", 1, "900", "טבע", "no image", ("TEVA",)),
-        Post("1002", "t2", 2, "900", "", "has image", (), root_subject="טבע",
+        Post("1001", "2026-01-05T10:00:00", 1, "900", "טבע", "no image", ("TEVA",)),
+        Post("1002", "2026-01-05T10:05:00", 2, "900", "", "has image", (), root_subject="טבע",
              image_file_name="pic.gif"),
     ]
     new = check.process_new_posts(
@@ -64,10 +64,10 @@ def test_process_inserts_downloads_and_notifies(tmp_path):
 def test_process_skips_already_seen_posts(tmp_path):
     conn = make_conn()
     config = make_config(tmp_path)
-    db.insert_post(conn, "1001", "t1", 1, "900", None, "s", "old", (), None, None, "s1")
+    db.insert_post(conn, "1001", "2026-01-05T10:00:00", 1, "900", None, "s", "old", (), None, None, "s1")
     sent = []
 
-    posts = [Post("1001", "t1", 1, "900", "s", "old", ())]
+    posts = [Post("1001", "2026-01-05T10:00:00", 1, "900", "s", "old", ())]
     new = check.process_new_posts(
         conn, config, posts,
         download=lambda *a, **k: "x",
@@ -89,7 +89,7 @@ def test_process_does_not_persist_post_when_send_fails(tmp_path):
     def failing_send(*args, **kwargs):
         raise RuntimeError("telegram api error")
 
-    posts = [Post("1001", "t1", 1, "900", "s", "old", ())]
+    posts = [Post("1001", "2026-01-05T10:00:00", 1, "900", "s", "old", ())]
 
     with pytest.raises(RuntimeError, match="telegram api error"):
         check.process_new_posts(
@@ -109,14 +109,14 @@ def test_process_keeps_earlier_successes_when_later_post_send_fails(tmp_path):
     config = make_config(tmp_path)
     sent = []
 
-    def flaky_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None):
+    def flaky_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None, after_hours=False, thread_url=None):
         sent.append(subject)
         if subject == "second":
             raise RuntimeError("telegram api error")
 
     posts = [
-        Post("1001", "t1", 1, "900", "first", "body1", ()),
-        Post("1002", "t2", 2, "900", "second", "body2", ()),
+        Post("1001", "2026-01-05T10:00:00", 1, "900", "first", "body1", ()),
+        Post("1002", "2026-01-05T10:05:00", 2, "900", "second", "body2", ()),
     ]
 
     with pytest.raises(RuntimeError, match="telegram api error"):
@@ -134,14 +134,199 @@ def test_process_keeps_earlier_successes_when_later_post_send_fails(tmp_path):
     assert db.post_exists(conn, "1002") is False
 
 
+def test_process_suppresses_low_signal_reply_to_other_thread_but_still_persists(tmp_path):
+    # A reply into someone else's thread, with no image/tag, classified as
+    # not a real signal, must be gated out of Telegram entirely (see
+    # notify_filter.should_notify) — but it's still genuinely new, so it
+    # must still be persisted/marked seen rather than reprocessed forever.
+    conn = make_conn()
+    config = make_config(tmp_path)
+    # Root of thread "900" is authored by someone else — no own_root row for
+    # it exists in this fresh DB, so classify_bucket falls back to reply_other.
+    posts = [Post("1001", "2026-01-05T10:00:00", 2, "900", "s", "not much", ())]
+    sent = []
+
+    new = check.process_new_posts(
+        conn, config, posts,
+        download=lambda *a, **k: None,
+        send_post=lambda *a, **k: sent.append(a),
+        classify=lambda *a, **k: Signal(
+            is_signal=False, ticker_mentioned=None, ticker_guess=None,
+            action="none", conviction="low", price_levels=None, rationale="",
+        ),
+    )
+
+    assert sent == []
+    assert [p.msg_id for p in new] == ["1001"]
+    assert db.post_exists(conn, "1001") is True
+
+
+def test_process_passes_after_hours_flag_for_post_outside_market_window(tmp_path):
+    conn = make_conn()
+    config = make_config(tmp_path)
+    sent = []
+
+    def fake_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None, after_hours=False, thread_url=None):
+        sent.append(after_hours)
+
+    # level=1 (own_root) always notifies, regardless of signal — isolates
+    # the after_hours wiring from the should_notify gating tested above.
+    posts = [Post("1001", "2026-01-05T22:00:00", 1, "900", "s", "b", ())]
+    check.process_new_posts(
+        conn, config, posts,
+        download=lambda *a, **k: None,
+        send_post=fake_send,
+    )
+
+    assert sent == [True]
+
+
+def test_process_passes_thread_url_built_from_forum_id_and_msg_id(tmp_path):
+    conn = make_conn()
+    config = make_config(tmp_path)
+    sent = []
+
+    def fake_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None, after_hours=False, thread_url=None):
+        sent.append(thread_url)
+
+    posts = [Post("1001", "2026-01-05T10:00:00", 1, "900", "s", "b", ())]
+    check.process_new_posts(
+        conn, config, posts,
+        download=lambda *a, **k: None,
+        send_post=fake_send,
+    )
+
+    assert sent == ["https://www.sponser.co.il/Forum.aspx?ForumId=1&MsgId=1001"]
+
+
+def test_process_holds_post_when_market_closed_instead_of_sending(tmp_path):
+    conn = make_conn()
+    config = make_config(tmp_path)
+    sent = []
+
+    # level=1 (own_root) always notifies — isolates the hold/queue behavior
+    # from should_notify gating tested elsewhere.
+    posts = [Post("1001", "2026-01-05T22:00:00", 1, "900", "s", "b", ())]
+    new = check.process_new_posts(
+        conn, config, posts,
+        download=lambda *a, **k: None,
+        send_post=lambda *a, **k: sent.append(a),
+        market_open=False,
+    )
+
+    assert sent == []
+    assert [p.msg_id for p in new] == ["1001"]
+    assert db.post_exists(conn, "1001") is True
+    row = conn.execute("SELECT notified FROM posts WHERE msg_id='1001'").fetchone()
+    assert row["notified"] == 0
+
+
+def test_process_does_not_queue_a_filtered_out_post_even_when_market_closed(tmp_path):
+    # should_notify=False means this post is never worth sending, market
+    # hours or not — it must be marked already-handled (notified=1), not
+    # queued for a future flush that would wrongly deliver it later.
+    conn = make_conn()
+    config = make_config(tmp_path)
+
+    posts = [Post("1001", "2026-01-05T22:00:00", 2, "900", "s", "not much", ())]
+    check.process_new_posts(
+        conn, config, posts,
+        download=lambda *a, **k: None,
+        send_post=lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not send")),
+        classify=lambda *a, **k: Signal(
+            is_signal=False, ticker_mentioned=None, ticker_guess=None,
+            action="none", conviction="low", price_levels=None, rationale="",
+        ),
+        market_open=False,
+    )
+
+    row = conn.execute("SELECT notified FROM posts WHERE msg_id='1001'").fetchone()
+    assert row["notified"] == 1
+
+
+def test_process_flushes_pending_posts_labeled_after_hours_when_market_reopens(tmp_path):
+    conn = make_conn()
+    config = make_config(tmp_path)
+
+    # Simulate a post held by a previous (market-closed) run.
+    db.insert_post(
+        conn, "1001", "2026-01-05T22:00:00", 1, "900", None, "held subject",
+        "held body", ("TEVA",), None, None, "2026-01-05T22:00:00",
+        signal_json=None, notified=False,
+    )
+
+    sent = []
+
+    def fake_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None, after_hours=False, thread_url=None):
+        sent.append((subject, tags, body, after_hours))
+
+    new = check.process_new_posts(
+        conn, config, [],  # no newly-scraped posts this run — just the flush
+        download=lambda *a, **k: None,
+        send_post=fake_send,
+        market_open=True,
+    )
+
+    assert new == []
+    assert sent == [("held subject", ("TEVA",), "held body", True)]
+    row = conn.execute("SELECT notified FROM posts WHERE msg_id='1001'").fetchone()
+    assert row["notified"] == 1
+
+
+def test_process_flush_passes_thread_url_for_pending_post(tmp_path):
+    conn = make_conn()
+    config = make_config(tmp_path)
+    db.insert_post(
+        conn, "1001", "2026-01-05T22:00:00", 1, "900", None, "held subject",
+        "held body", (), None, None, "2026-01-05T22:00:00",
+        signal_json=None, notified=False,
+    )
+    sent = []
+
+    def fake_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None, after_hours=False, thread_url=None):
+        sent.append(thread_url)
+
+    check.process_new_posts(
+        conn, config, [],
+        download=lambda *a, **k: None,
+        send_post=fake_send,
+        market_open=True,
+    )
+
+    assert sent == ["https://www.sponser.co.il/Forum.aspx?ForumId=1&MsgId=1001"]
+
+
+def test_process_does_not_flush_pending_posts_while_market_still_closed(tmp_path):
+    conn = make_conn()
+    config = make_config(tmp_path)
+    db.insert_post(
+        conn, "1001", "2026-01-05T22:00:00", 1, "900", None, "s", "b", (),
+        None, None, "2026-01-05T22:00:00", signal_json=None, notified=False,
+    )
+
+    check.process_new_posts(
+        conn, config, [],
+        download=lambda *a, **k: None,
+        send_post=lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not send")),
+        market_open=False,
+    )
+
+    row = conn.execute("SELECT notified FROM posts WHERE msg_id='1001'").fetchone()
+    assert row["notified"] == 0
+
+
 def test_run_check_success_path(tmp_path, monkeypatch):
     config = make_config(tmp_path)
-    fetched = [Post("2001", "t", 1, "900", "טבע", "brand new post", ("TEVA",))]
+    # run_check reads the real clock via notify_filter.is_market_hours_now
+    # to decide immediate-send vs hold-for-later; pin it so this test is
+    # deterministic regardless of what time it actually is when run.
+    monkeypatch.setattr(notify_filter, "is_market_hours_now", lambda: True)
+    fetched = [Post("2001", "2026-01-05T10:00:00", 1, "900", "טבע", "brand new post", ("TEVA",))]
     monkeypatch.setattr(client, "fetch_posts", lambda **k: fetched)
     sent = []
     monkeypatch.setattr(
         "hadar_tracker.notifier.send_post",
-        lambda token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None: sent.append(body),
+        lambda token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None, after_hours=False, thread_url=None: sent.append(body),
     )
     rc = check.run_check(config)
     assert rc == 0
@@ -150,6 +335,7 @@ def test_run_check_success_path(tmp_path, monkeypatch):
 
 def test_run_check_reports_failure_and_alerts(tmp_path, monkeypatch):
     config = make_config(tmp_path)
+    monkeypatch.setattr(notify_filter, "is_market_hours_now", lambda: True)
 
     def boom(**k):
         raise parse.ScrapeError("shape changed")
@@ -173,7 +359,8 @@ def test_run_check_reports_failure_and_alerts_when_processing_fails(tmp_path, mo
     # This is the gap the old code had — only the fetch_posts call was
     # guarded, so this exception used to escape run_check unhandled.
     config = make_config(tmp_path)
-    fetched = [Post("3001", "t", 1, "900", "טבע", "brand new post", ("TEVA",))]
+    monkeypatch.setattr(notify_filter, "is_market_hours_now", lambda: True)
+    fetched = [Post("3001", "2026-01-05T10:00:00", 1, "900", "טבע", "brand new post", ("TEVA",))]
     monkeypatch.setattr(client, "fetch_posts", lambda **k: fetched)
 
     def failing_send(*args, **kwargs):
@@ -193,6 +380,54 @@ def test_run_check_reports_failure_and_alerts_when_processing_fails(tmp_path, mo
     assert len(alerts) == 1
     assert "telegram api error" in alerts[0]
     assert any("telegram api error" in record.message for record in caplog.records)
+
+
+def _make_file_config(tmp_path):
+    # A real sqlite file, not ":memory:" — needed here so a connection made
+    # in the test setup and the separate connection run_check opens
+    # internally actually see the same persisted state (two ":memory:"
+    # connections would each get their own empty, unrelated database).
+    return Config(
+        db_path=str(tmp_path / "test.sqlite3"),
+        images_dir=str(tmp_path / "images"),
+        telegram_bot_token="tok",
+        telegram_chat_id="42",
+        user_id=5609,
+        forum_id=1,
+    )
+
+
+def test_run_check_skips_scrape_when_offhours_check_ran_recently(tmp_path, monkeypatch):
+    config = _make_file_config(tmp_path)
+    monkeypatch.setattr(notify_filter, "is_market_hours_now", lambda: False)
+    calls = []
+    monkeypatch.setattr(client, "fetch_posts", lambda **k: calls.append(1) or [])
+
+    # Pre-seed a last_offhours_check timestamp from just now, so the
+    # throttle sees "checked recently" when run_check opens its own
+    # connection to the same file.
+    from datetime import datetime
+    conn = db.connect(config.db_path)
+    db.init_db(conn)
+    db.set_meta(conn, "last_offhours_check", datetime.now(notify_filter.IL_TZ).isoformat())
+
+    rc = check.run_check(config)
+
+    assert rc == 0
+    assert calls == []  # scrape never happened — throttled
+
+
+def test_run_check_runs_offhours_check_when_none_ran_yet(tmp_path, monkeypatch):
+    config = _make_file_config(tmp_path)
+    monkeypatch.setattr(notify_filter, "is_market_hours_now", lambda: False)
+    monkeypatch.setattr(client, "fetch_posts", lambda **k: [])
+
+    rc = check.run_check(config)
+
+    assert rc == 0
+    conn = db.connect(config.db_path)
+    db.init_db(conn)
+    assert db.get_meta(conn, "last_offhours_check") is not None
 
 
 class _FakeResponse:
@@ -236,6 +471,7 @@ def test_run_check_end_to_end_through_real_parser(tmp_path, monkeypatch):
     a Post field rename on the parser side silently breaking the
     check/db/notifier side, which independently-mocked halves can't catch.
     """
+    monkeypatch.setattr(notify_filter, "is_market_hours_now", lambda: True)
     payload = json.loads(
         pathlib.Path("tests/fixtures/sample_stream.json").read_text(encoding="utf-8")
     )
@@ -254,7 +490,7 @@ def test_run_check_end_to_end_through_real_parser(tmp_path, monkeypatch):
 
     sent = []
 
-    def fake_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None):
+    def fake_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None, after_hours=False, thread_url=None):
         sent.append((subject, tags, body, root_subject, image_path))
 
     monkeypatch.setattr("hadar_tracker.notifier.send_post", fake_send)
@@ -314,7 +550,7 @@ def test_process_calls_classify_with_post_image_path_and_config_and_persists_sig
     config = make_config(tmp_path)
     calls = []
 
-    def fake_classify(post, image_path, api_key, model):
+    def fake_classify(post, image_path, api_key, model, vision_model=None):
         calls.append((post.msg_id, image_path, api_key, model))
         return Signal(
             is_signal=True,
@@ -328,10 +564,10 @@ def test_process_calls_classify_with_post_image_path_and_config_and_persists_sig
 
     sent = []
 
-    def fake_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None):
+    def fake_send(token, chat_id, subject, tags, body, root_subject=None, image_path=None, signal=None, after_hours=False, thread_url=None):
         sent.append(signal)
 
-    posts = [Post("2001", "t", 1, "900", "s", "b", ())]
+    posts = [Post("2001", "2026-01-05T10:00:00", 1, "900", "s", "b", ())]
     check.process_new_posts(
         conn, config, posts,
         download=lambda *a, **k: None,
@@ -351,7 +587,7 @@ def test_process_persists_null_signal_json_when_classify_returns_none(tmp_path):
     conn = make_conn()
     config = make_config(tmp_path)
 
-    posts = [Post("2002", "t", 1, "900", "s", "b", ())]
+    posts = [Post("2002", "2026-01-05T10:00:00", 1, "900", "s", "b", ())]
     check.process_new_posts(
         conn, config, posts,
         download=lambda *a, **k: None,

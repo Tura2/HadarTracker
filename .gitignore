@@ -3,3 +3,10 @@ data/
 __pycache__/
 *.pyc
 .env
+.pytest_cache/
+*.egg-info/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log

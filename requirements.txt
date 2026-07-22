@@ -1,3 +1,4 @@
 requests>=2.31
 python-telegram-bot>=21.0
 pytest>=8.0
+tzdata>=2024.1

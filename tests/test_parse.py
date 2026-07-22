@@ -35,6 +35,20 @@ def test_extract_tags_from_list_of_strings_and_dicts():
     assert extract_tags([{"Symbol": "TEVA"}, {"Symbol": "ICL"}]) == ("TEVA", "ICL")
 
 
+def test_extract_tags_includes_name_alongside_symbol():
+    # Real Tags entries are {"Name": "...", "Symbol": "..."} where Symbol is
+    # Sponser's internal numeric security id, not a ticker — meaningless on
+    # its own, so the name must be included too.
+    assert extract_tags([{"Name": "תדיראן גרופ", "Symbol": "258012"}]) == (
+        "תדיראן גרופ (258012)",
+    )
+
+
+def test_extract_tags_falls_back_to_whichever_field_is_present():
+    assert extract_tags([{"Name": "תדיראן גרופ"}]) == ("תדיראן גרופ",)
+    assert extract_tags([{"Symbol": "258012"}]) == ("258012",)
+
+
 def test_parse_filters_to_hadar_only():
     posts = parse_posts(PAYLOAD)
     assert [p.msg_id for p in posts] == ["5001", "5002", "5004", "5006"]

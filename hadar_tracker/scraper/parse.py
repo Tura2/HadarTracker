@@ -29,23 +29,33 @@ def parse_date(raw: str) -> str:
     return datetime.strptime(raw.strip(), _DATE_FORMAT).isoformat()
 
 
+def _format_tag_dict(part: dict) -> str:
+    """A real `Tags` entry is `{"Name": "תדיראן גרופ", "Symbol": "258012"}` —
+    Symbol is Sponser's internal numeric security id, not a ticker, so on
+    its own it's meaningless to a human reader. Render "{Name} ({Symbol})"
+    when both are present; fall back to whichever one exists otherwise.
+    """
+    symbol = part.get("Symbol") or part.get("symbol") or ""
+    name = part.get("Name") or part.get("name") or ""
+    if name and symbol:
+        return f"{name} ({symbol})"
+    return str(name or symbol)
+
+
 def extract_tags(raw) -> tuple[str, ...]:
-    """Normalize the `Tags` field into a tuple of ticker symbols.
+    """Normalize the `Tags` field into a tuple of display-ready tag strings.
 
     Defensive about shape: accepts a comma/semicolon-delimited string, or a
-    list of strings, or a list of dicts carrying a `Symbol`/`symbol` key.
-    Returns () for anything empty or unrecognized.
+    list of strings, or a list of dicts carrying `Name`/`Symbol` (or
+    lowercase `name`/`symbol`) keys — see _format_tag_dict for how those
+    render. Returns () for anything empty or unrecognized.
     """
     if not raw:
         return ()
     if isinstance(raw, str):
         parts = re.split(r"[,;]", raw)
     elif isinstance(raw, list):
-        parts = [
-            part if isinstance(part, str)
-            else str(part.get("Symbol") or part.get("symbol") or "")
-            for part in raw
-        ]
+        parts = [part if isinstance(part, str) else _format_tag_dict(part) for part in raw]
     else:
         return ()
     return tuple(p.strip() for p in parts if p and p.strip())

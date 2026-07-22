@@ -40,6 +40,7 @@ def test_load_config_openrouter_defaults_to_none_and_default_model():
     config = load_config(env)
     assert config.openrouter_api_key is None
     assert config.openrouter_model == "anthropic/claude-sonnet-4.5"
+    assert config.openrouter_vision_model is None
 
 
 def test_load_config_reads_openrouter_overrides():
@@ -48,10 +49,12 @@ def test_load_config_reads_openrouter_overrides():
         "TELEGRAM_CHAT_ID": "123",
         "OPENROUTER_API_KEY": "sk-or-abc",
         "OPENROUTER_MODEL": "some/other-model",
+        "OPENROUTER_VISION_MODEL": "google/gemini-2.5-flash",
     }
     config = load_config(env)
     assert config.openrouter_api_key == "sk-or-abc"
     assert config.openrouter_model == "some/other-model"
+    assert config.openrouter_vision_model == "google/gemini-2.5-flash"
 
 
 def test_load_config_does_not_require_openrouter_api_key():

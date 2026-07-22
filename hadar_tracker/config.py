@@ -25,6 +25,7 @@ class Config:
     forum_id: int
     openrouter_api_key: str | None = None
     openrouter_model: str = "anthropic/claude-sonnet-4.5"
+    openrouter_vision_model: str | None = None
 
 
 def load_config(env: dict[str, str] | None = None) -> Config:
@@ -62,4 +63,5 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         forum_id=int(source.get("FORUM_ID", "1")),
         openrouter_api_key=source.get("OPENROUTER_API_KEY") or None,
         openrouter_model=source.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5"),
+        openrouter_vision_model=source.get("OPENROUTER_VISION_MODEL") or None,
     )

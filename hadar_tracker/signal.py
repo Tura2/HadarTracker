@@ -25,8 +25,17 @@ def classify_post(
     image_path: str | None,
     api_key: str | None,
     model: str = DEFAULT_MODEL,
+    vision_model: str | None = None,
 ) -> Signal | None:
     """Classify a post into a structured trade signal via OpenRouter.
+
+    `model` is used for every post. When `image_path` is set AND
+    `vision_model` is given, `vision_model` is used instead — `model` may be
+    a text-only model (e.g. DeepSeek's v4 family, which has no image input
+    modality on OpenRouter and would otherwise 404 on every image post),
+    while `vision_model` (e.g. google/gemini-2.5-flash) actually reads the
+    chart. If `vision_model` is None, `model` is used regardless of whether
+    there's an image — matching the original single-model behavior.
 
     Fail-open by design (see the Phase 2 design spec's Error handling
     section): returns None — never raises — if api_key is unset, the HTTP
@@ -39,9 +48,12 @@ def classify_post(
 
     try:
         content: list[dict] = [{"type": "text", "text": _build_prompt(post)}]
+        effective_model = model
         if image_path:
             try:
                 content.append(_image_content_block(image_path))
+                if vision_model:
+                    effective_model = vision_model
             except Exception as exc:  # noqa: BLE001 - catch all image-read errors
                 log.warning(
                     "could not read image %s for classification: %s", image_path, exc
@@ -54,7 +66,7 @@ def classify_post(
                 "Content-Type": "application/json",
             },
             json={
-                "model": model,
+                "model": effective_model,
                 "messages": [{"role": "user", "content": content}],
                 "response_format": {"type": "json_object"},
             },

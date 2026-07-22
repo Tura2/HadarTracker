@@ -138,6 +138,65 @@ def test_classify_post_proceeds_text_only_when_image_unreadable(monkeypatch):
     assert len(content) == 1  # text only, image block skipped
 
 
+def test_classify_post_uses_vision_model_when_image_present(monkeypatch, tmp_path):
+    img = tmp_path / "chart.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    fake = FakeRequests(
+        FakeResponse(_openrouter_payload({"is_signal": False, "action": "none", "conviction": "low"}))
+    )
+    monkeypatch.setattr(signal, "requests", fake)
+
+    signal.classify_post(
+        make_post(), str(img), api_key="k", model="deepseek/deepseek-v4-flash",
+        vision_model="google/gemini-2.5-flash",
+    )
+
+    assert fake.calls[0]["json"]["model"] == "google/gemini-2.5-flash"
+
+
+def test_classify_post_uses_text_model_when_no_image_even_with_vision_model_set(monkeypatch):
+    fake = FakeRequests(
+        FakeResponse(_openrouter_payload({"is_signal": False, "action": "none", "conviction": "low"}))
+    )
+    monkeypatch.setattr(signal, "requests", fake)
+
+    signal.classify_post(
+        make_post(), None, api_key="k", model="deepseek/deepseek-v4-flash",
+        vision_model="google/gemini-2.5-flash",
+    )
+
+    assert fake.calls[0]["json"]["model"] == "deepseek/deepseek-v4-flash"
+
+
+def test_classify_post_falls_back_to_model_for_image_when_vision_model_unset(monkeypatch, tmp_path):
+    img = tmp_path / "chart.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    fake = FakeRequests(
+        FakeResponse(_openrouter_payload({"is_signal": False, "action": "none", "conviction": "low"}))
+    )
+    monkeypatch.setattr(signal, "requests", fake)
+
+    signal.classify_post(make_post(), str(img), api_key="k", model="anthropic/claude-sonnet-4.5")
+
+    assert fake.calls[0]["json"]["model"] == "anthropic/claude-sonnet-4.5"
+
+
+def test_classify_post_uses_text_model_when_image_unreadable_even_with_vision_model_set(monkeypatch):
+    fake = FakeRequests(
+        FakeResponse(_openrouter_payload({"is_signal": False, "action": "none", "conviction": "low"}))
+    )
+    monkeypatch.setattr(signal, "requests", fake)
+
+    signal.classify_post(
+        make_post(), "/no/such/file.png", api_key="k", model="deepseek/deepseek-v4-flash",
+        vision_model="google/gemini-2.5-flash",
+    )
+
+    # Image was unreadable, so no image block was ever attached — must not
+    # route to the vision model for a request that has no image in it.
+    assert fake.calls[0]["json"]["model"] == "deepseek/deepseek-v4-flash"
+
+
 def test_classify_post_includes_thread_transcript_in_prompt(monkeypatch):
     """Verify that thread_transcript with multiple ThreadItems is rendered in the LLM prompt."""
     transcript = (

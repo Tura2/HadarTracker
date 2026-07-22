@@ -28,6 +28,16 @@ chmod 600 .env
 Get a bot token from @BotFather; get your chat id by messaging the bot and
 reading `https://api.telegram.org/bot<TOKEN>/getUpdates`.
 
+Also set `OPENROUTER_API_KEY` (and optionally `OPENROUTER_MODEL`, default
+`anthropic/claude-sonnet-4.5` — this deployment uses `deepseek/deepseek-v4-flash`)
+to enable Phase 2 LLM trade-signal classification. Without a key, classification
+is simply skipped (`signal=None`) and every post still gets scraped, stored,
+and — subject to the notification filter below — notified.
+
+**Never commit real secrets into `.env.example`** — it's tracked by git
+(unlike `.env`, which is gitignored); it should only ever contain empty
+placeholders.
+
 ## 3. Make the wrapper executable and smoke-test
 
 ```bash
@@ -38,7 +48,24 @@ chmod +x deploy/run_check.sh
 Expected: exit code 0, a log line `check complete: N new post(s)`, and — on the
 first run against the live feed — Telegram messages for the recent posts
 (subject, 🏷 tickers, ↩️ reply-context where applicable, body, and the attached
-picture when one is present).
+picture when one is present). Not every "new post" necessarily produces a
+message, though — see the notification filter below.
+
+## 3.5. What actually gets notified
+
+Not every scraped post reaches Telegram. `hadar_tracker/notify_filter.py`
+gates on the post's thread bucket: a thread Hadar started always notifies; a
+reply (his own thread or someone else's) with an image or ticker tag always
+notifies; a reply with neither defers to the Phase 2 LLM signal, and sends
+anyway if classification is unavailable (fail-open — a classifier hiccup must
+never look like a silently dropped post).
+
+Notifications are also held to **09:30-17:30 Israel time**. A post that
+should notify but is found outside that window is stored (not sent) and
+flushed — labeled 🌙 **After Hours** — at the start of the next run where the
+window is open. This is enforced in code, not by narrowing the timer/cron
+schedule below — **keep the job running on its normal 10-15 min cadence all
+day**, otherwise the hold queue won't get flushed promptly at 09:30.
 
 ## 4. Schedule it — choose ONE of the two options below
 
@@ -71,13 +98,16 @@ Add (every 10 minutes; adjust to 15 once cadence is known):
 `check.py` exits non-zero and sends a Telegram alert on failure, so both the
 log file / `journalctl` and Telegram surface problems — no silent misses.
 
-## 5. Historical backfill — NOT available yet
+## 5. Historical backfill
 
-`python -m hadar_tracker.backfill` is currently a **stub**: it logs that the
-history-crawl mechanism is undetermined and exits with code 2. The live
-endpoint only covers ~1 day of activity; reaching Hadar's full archive needs a
-follow-up investigation (see the design spec's "Open items"). Backfill is not
-required for Phase 1 launch — only before Phase 2 analysis.
+`python -m hadar_tracker.backfill --days N` is implemented: it walks the
+general forum listing (`scraper/history.py`) backward from the current page,
+filtering to Hadar's posts, until it crosses the `--days` cutoff. It never
+sends Telegram notifications (a historical import isn't a live alert stream)
+and is safe to interrupt and rerun. `load_config()` still requires
+`TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` to be set even though backfill doesn't
+use them — construct a `Config` directly (see `scripts/run_backfill_no_telegram.py`)
+to run it without real Telegram credentials.
 
 ## 6. Tuning
 
