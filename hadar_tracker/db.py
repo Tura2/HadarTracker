@@ -104,13 +104,14 @@ def insert_post(
     `tags` is JSON-encoded to a TEXT column here (single source of truth for
     the serialization format). `signal_json` is the caller's already-
     serialized `Signal` (see hadar_tracker.signal.classify_post) or None if
-    classification didn't run/succeed. `notified` defaults to True (matching
-    every caller before the trading-hours hold queue existed, e.g.
-    backfill.py, which never sends at all); check.py passes False for a
-    post that's being queued outside market hours instead of sent
-    immediately — see notify_filter.py and fetch_pending_posts/mark_notified
-    below. Returns True iff a new row was inserted — safe for both the
-    incremental check and any idempotent re-run.
+    classification didn't run/succeed. `notified` defaults to True — posts
+    are sent immediately when found, regardless of the hour (see
+    check.py/notify_filter.py), so no current caller inserts with
+    notified=False. The parameter and the notified=0 path
+    (fetch_pending_posts/mark_notified below) only remain to drain any row
+    left over from the older hold-until-market-open behavior. Returns True
+    iff a new row was inserted — safe for both the incremental check and any
+    idempotent re-run.
     """
     cur = conn.execute(
         "INSERT OR IGNORE INTO posts "
@@ -142,10 +143,11 @@ def count_posts(conn: sqlite3.Connection) -> int:
 
 
 def fetch_pending_posts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Posts already stored but not yet sent (notified=0) — queued because
-    they were discovered outside the 09:30-17:30 Israel trading-hours
-    window. Ordered by posted_at so a flush delivers them in the order
-    Hadar actually posted them.
+    """Posts already stored but not yet sent (notified=0) — a legacy queue
+    from before posts were sent immediately at all hours; nothing inserts
+    with notified=False anymore, so this only ever drains rows left over
+    from that older behavior. Ordered by posted_at so a flush delivers them
+    in the order Hadar actually posted them.
     """
     return conn.execute(
         "SELECT * FROM posts WHERE notified = 0 ORDER BY posted_at"

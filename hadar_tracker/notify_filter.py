@@ -80,9 +80,10 @@ def is_after_hours(posted_at: str) -> bool:
 
 def is_market_hours_now() -> bool:
     """True if the current real-world time is within 09:30-17:30 Israel
-    time. Used by check.py to decide whether a new post that should be
-    notified gets sent immediately or held (notified=0) for the next run
-    that lands inside the window — see db.fetch_pending_posts.
+    time. Used by check.py only to decide whether to throttle the
+    off-hours scrape cadence (see should_run_offhours_check below) — it no
+    longer gates whether a post gets sent; posts always send immediately
+    once found, labeled after-hours via is_after_hours when applicable.
     """
     local_time = datetime.now(IL_TZ).time()
     return MARKET_OPEN <= local_time <= MARKET_CLOSE

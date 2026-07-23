@@ -236,47 +236,23 @@ def test_process_dedupes_notify_chat_ids_when_extra_matches_primary(tmp_path):
     assert sent_chat_ids == ["42", "99"]  # "42" not repeated
 
 
-def test_process_holds_post_when_market_closed_instead_of_sending(tmp_path):
+def test_process_sends_post_immediately_even_when_found_after_hours(tmp_path):
     conn = make_conn()
     config = make_config(tmp_path)
     sent = []
 
-    # level=1 (own_root) always notifies — isolates the hold/queue behavior
-    # from should_notify gating tested elsewhere.
+    # level=1 (own_root) always notifies — isolates the immediate-send
+    # behavior from should_notify gating tested elsewhere.
     posts = [Post("1001", "2026-01-05T22:00:00", 1, "900", "s", "b", ())]
     new = check.process_new_posts(
         conn, config, posts,
         download=lambda *a, **k: None,
         send_post=lambda *a, **k: sent.append(a),
-        market_open=False,
     )
 
-    assert sent == []
+    assert len(sent) == 1
     assert [p.msg_id for p in new] == ["1001"]
     assert db.post_exists(conn, "1001") is True
-    row = conn.execute("SELECT notified FROM posts WHERE msg_id='1001'").fetchone()
-    assert row["notified"] == 0
-
-
-def test_process_does_not_queue_a_filtered_out_post_even_when_market_closed(tmp_path):
-    # should_notify=False means this post is never worth sending, market
-    # hours or not — it must be marked already-handled (notified=1), not
-    # queued for a future flush that would wrongly deliver it later.
-    conn = make_conn()
-    config = make_config(tmp_path)
-
-    posts = [Post("1001", "2026-01-05T22:00:00", 2, "900", "s", "not much", ())]
-    check.process_new_posts(
-        conn, config, posts,
-        download=lambda *a, **k: None,
-        send_post=lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not send")),
-        classify=lambda *a, **k: Signal(
-            is_signal=False, ticker_mentioned=None, ticker_guess=None,
-            action="none", conviction="low", price_levels=None, rationale="",
-        ),
-        market_open=False,
-    )
-
     row = conn.execute("SELECT notified FROM posts WHERE msg_id='1001'").fetchone()
     assert row["notified"] == 1
 
@@ -301,7 +277,6 @@ def test_process_flushes_pending_posts_labeled_after_hours_when_market_reopens(t
         conn, config, [],  # no newly-scraped posts this run — just the flush
         download=lambda *a, **k: None,
         send_post=fake_send,
-        market_open=True,
     )
 
     assert new == []
@@ -327,7 +302,6 @@ def test_process_flush_passes_thread_url_for_pending_post(tmp_path):
         conn, config, [],
         download=lambda *a, **k: None,
         send_post=fake_send,
-        market_open=True,
     )
 
     assert sent == ["https://www.sponser.co.il/Forum.aspx?ForumId=1&MsgId=1001"]
@@ -349,29 +323,9 @@ def test_process_flush_sends_to_every_notify_chat_id(tmp_path):
         conn, config, [],
         download=lambda *a, **k: None,
         send_post=fake_send,
-        market_open=True,
     )
 
     assert sent_chat_ids == ["42", "99"]
-
-
-def test_process_does_not_flush_pending_posts_while_market_still_closed(tmp_path):
-    conn = make_conn()
-    config = make_config(tmp_path)
-    db.insert_post(
-        conn, "1001", "2026-01-05T22:00:00", 1, "900", None, "s", "b", (),
-        None, None, "2026-01-05T22:00:00", signal_json=None, notified=False,
-    )
-
-    check.process_new_posts(
-        conn, config, [],
-        download=lambda *a, **k: None,
-        send_post=lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not send")),
-        market_open=False,
-    )
-
-    row = conn.execute("SELECT notified FROM posts WHERE msg_id='1001'").fetchone()
-    assert row["notified"] == 0
 
 
 def test_run_check_success_path(tmp_path, monkeypatch):

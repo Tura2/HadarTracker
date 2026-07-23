@@ -12,9 +12,13 @@ OpenRouter, `hadar_tracker/signal.py`) are both live. A structural notification 
 (`hadar_tracker/notify_filter.py`) sits on top of both, validated against a manual-labeling pass
 over 90 days of real posts (see `docs/superpowers/specs/` for that analysis): a post Hadar starts
 himself always notifies; a reply elsewhere with an image or ticker tag always notifies; everything
-else defers to the LLM signal, fail-open (sends) if classification is unavailable. Notifications
-are also gated to 09:30-17:30 Israel time — a post found outside that window is held and flushed,
-labeled "🌙 After Hours", on the next run inside the window (see `check.py`'s `_flush_pending`).
+else defers to the LLM signal, fail-open (sends) if classification is unavailable. A post found
+outside 09:30-17:30 Israel time is sent immediately just like any other, labeled "🌙 After Hours"
+(see `notify_filter.is_after_hours`) — only the *scrape* cadence differs outside that window (see
+"Timing/scheduling" below), not whether or when a matching post is delivered. (An earlier design
+held after-hours posts and flushed them at the next in-window run; `check.py`'s `_flush_pending`
+still exists solely to drain any row a pre-upgrade deployment left queued that way — it is not how
+new posts are handled.)
 
 The full design history is in `docs/superpowers/specs/2026-07-21-phase1-tracker-design.md`
 (the authoritative spec — read it before making architectural changes) and
@@ -111,11 +115,13 @@ review.
   always go to `telegram_chat_id` alone, never these.
 - `db.py` — all SQLite access (single-writer, single-file). `insert_post` is `INSERT OR IGNORE`
   returning whether a row was actually new — this is what makes both `check.py` and `backfill.py`
-  idempotent/resumable; there is no separate upsert path. The `notified` column (default 1) backs
-  the trading-hours hold queue: a row inserted with `notified=False` is picked up by
-  `fetch_pending_posts`/`mark_notified` on a later run once the market-hours window reopens. A
-  small `meta` key-value table (`get_meta`/`set_meta`) holds run-level state that isn't a post —
-  currently just `notify_filter`'s off-hours-check throttle timestamp.
+  idempotent/resumable; there is no separate upsert path. The `notified` column (default 1) is a
+  legacy hook from an earlier design that held after-hours posts (`notified=False`) for a later
+  flush via `fetch_pending_posts`/`mark_notified`; no current caller inserts with `notified=False`
+  since posts now always send immediately, but the column/lookup stay so any row a pre-upgrade
+  deployment left queued still drains on the next run. A small `meta` key-value table
+  (`get_meta`/`set_meta`) holds run-level state that isn't a post — currently just
+  `notify_filter`'s off-hours-check throttle timestamp.
 - `scraper/client.py`, `scraper/history.py`, `scraper/parse.py` — see Architecture above.
 - `images.py` — attachment download.
 - `notify_filter.py` — decides whether/when a post actually reaches Telegram.
@@ -125,10 +131,12 @@ review.
   the LLM `Signal` — an own root always passes, a reply with an image or ticker tag always passes,
   everything else defers to the signal and fails open (sends) if classification didn't run.
   `is_after_hours`/`is_market_hours_now` implement the 09:30-17:30 Israel-time window: the former
-  is a pure per-post label (posted_at is already naive Israel-local, see `scraper/parse.py`), the
-  latter reads the real clock via `zoneinfo` (`tzdata` is a hard dependency — Windows has no system
-  IANA tz database) and drives the hold/flush decision in `check.py`. `should_run_offhours_check`/
-  `mark_offhours_check_ran` (backed by `db.get_meta`/`set_meta`) throttle off-hours work to once per
+  is a pure per-post label (posted_at is already naive Israel-local, see `scraper/parse.py`) used
+  to tag a Telegram message "🌙 After Hours" — it does NOT delay or suppress sending. The latter
+  reads the real clock via `zoneinfo` (`tzdata` is a hard dependency — Windows has no system IANA
+  tz database) and is used only to decide whether `check.py` should throttle its off-hours scrape
+  cadence, not whether a found post gets sent. `should_run_offhours_check`/`mark_offhours_check_ran`
+  (backed by `db.get_meta`/`set_meta`) throttle off-hours *scraping* to once per
   `OFFHOURS_CHECK_INTERVAL_SECONDS` (1 hour) — see check.py's `run_check` for why this lives in code
   rather than a second cron/systemd schedule.
 - `notifier.py` — Telegram sending, via HTML parse mode (required for the bold labels below).
@@ -166,17 +174,20 @@ review.
   `config.telegram_chat_id` plus every `telegram_extra_chat_ids` (deduplicated) — used both here
   and in `_flush_pending`; `run_check`'s error-alert path deliberately does NOT use this and only
   ever targets `telegram_chat_id`, so subscribing via an extra chat id gets Hadar's posts without
-  also getting woken up by an admin-only scraper failure. A post that `should_notify` but arrives
-  while `market_open` is False is held (`notified=False`) instead of sent; `_flush_pending` sends
-  every held post, each labeled after-hours, at the start of the next run where the market is
-  open. `run_check` computes
-  `market_open` from `notify_filter.is_market_hours_now()` and wraps DB setup, the scrape call,
-  *and* `process_new_posts` each in the same fail-loud contract (log + Telegram alert + non-zero
-  exit) — this covers the whole run, not just the scrape step, since a Telegram/download error on a
-  genuinely new post is the most likely real-world failure mode. When `market_open` is False,
-  `run_check` also calls `notify_filter.should_run_offhours_check` right after DB setup and returns
-  0 immediately (no scrape at all) unless an hour has passed since the last off-hours check — see
-  "Timing/scheduling" below for why the interval itself lives here, not in the scheduler.
+  also getting woken up by an admin-only scraper failure. A post that `should_notify` sends
+  immediately regardless of the hour, labeled after-hours via `notify_filter.is_after_hours` when
+  applicable — there is no hold/queue for newly-found posts. `_flush_pending` still runs
+  unconditionally at the top of every call purely to drain any row a pre-upgrade deployment left
+  queued (`notified=False`) under the old hold-until-market-open design; it is not part of how new
+  posts are handled today. `run_check` wraps DB setup, the scrape call, *and* `process_new_posts`
+  each in the same fail-loud contract (log + Telegram alert + non-zero exit) — this covers the
+  whole run, not just the scrape step, since a Telegram/download error on a genuinely new post is
+  the most likely real-world failure mode. Outside 09:30-17:30 Israel time (`notify_filter
+  .is_market_hours_now()`), `run_check` calls `notify_filter.should_run_offhours_check` right after
+  DB setup and returns 0 immediately (no scrape at all) unless an hour has passed since the last
+  off-hours check — see "Timing/scheduling" below for why the interval itself lives here, not in
+  the scheduler. This only throttles *discovery*; once a post is scraped, it sends right away no
+  matter the hour.
 - `backfill.py` — walks `scraper/history.py` backward from the current page, stopping once a
   page's oldest item crosses the `--days` cutoff (default 30). Never sends Telegram notifications
   (it's a historical import, not a live alert stream — dumping months of backfilled posts as
@@ -192,10 +203,11 @@ boundary is faked) — it exists to catch cross-module shape mismatches that iso
 would miss.
 
 **Deployment** (`deploy/`): target is a systemd timer (or cron) on an Oracle Cloud VPS running
-`python -m hadar_tracker.check` every 10–15 minutes, **all day, unchanged** — the 09:30-17:30 gate
-is enforced in code (`notify_filter`/`check.py`), not by narrowing the timer's schedule. The
-scraper still needs to run continuously so the hold queue gets flushed promptly at the next
-in-window run rather than sitting stale. See `deploy/README.md` for the full walkthrough.
+`python -m hadar_tracker.check` every 10–15 minutes, **all day, unchanged** — the schedule doesn't
+narrow around 09:30-17:30; `notify_filter`/`check.py` handle the off-hours *scrape* throttle in
+code instead (see "Timing/scheduling" below). The scraper still needs to run continuously so a
+newly-found post — in or out of market hours — gets sent without delay. See `deploy/README.md` for
+the full walkthrough.
 
 **Timing/scheduling — where each interval actually lives:**
 - **In-hours check interval** (how often `check.py` runs 09:30-17:30): purely a scheduler setting,

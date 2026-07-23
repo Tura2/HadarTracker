@@ -25,12 +25,12 @@ def _notify_chat_ids(config: Config) -> tuple[str, ...]:
 
 
 def _flush_pending(conn, config: Config, send_post) -> None:
-    """Send anything queued from a previous run (notified=0) — a post that
-    passed should_notify but was discovered outside 09:30-17:30 Israel time,
-    so it was held rather than sent then. Always labeled "🌙 After Hours"
-    since, by construction, anything in this queue was outside the window
-    when it was found. Only called when the caller has already confirmed
-    market_open is True for this run (see process_new_posts).
+    """Send anything still queued (notified=0) from before posts were sent
+    immediately at all hours. Posts are no longer queued going forward (see
+    process_new_posts), but any row left over from that older behavior still
+    needs to go out exactly once, so this runs unconditionally on every call.
+    Always labeled "🌙 After Hours" since, by construction, anything that
+    ever landed in this queue was outside the window when it was found.
     """
     for row in db.fetch_pending_posts(conn):
         signal = Signal(**json.loads(row["signal_json"])) if row["signal_json"] else None
@@ -57,14 +57,12 @@ def process_new_posts(
     download=None,
     send_post=None,
     classify=None,
-    market_open: bool = True,
 ) -> list[Post]:
     """Download any attachment, classify it into a trade signal, notify
-    (subject to the notify_filter gate and trading-hours window), then
-    persist unseen posts. Returns the posts newly processed (persisted),
-    regardless of whether they were actually sent — a filtered-out or
-    queued post is still genuinely new and must be marked seen so it isn't
-    reprocessed forever.
+    (subject to the notify_filter gate), then persist unseen posts. Returns
+    the posts newly processed (persisted), regardless of whether they were
+    actually sent — a filtered-out post is still genuinely new and must be
+    marked seen so it isn't reprocessed forever.
 
     Classification (`classify`) runs between download and the notify
     decision, and is fail-open by contract (classify_post never raises —
@@ -76,17 +74,14 @@ def process_new_posts(
     the classification, whether this post is worth sending at all — see
     notify_filter.py for the reasoning.
 
-    A post that should be notified but is discovered while `market_open` is
-    False (outside 09:30-17:30 Israel time) is held: stored with
-    notified=0 and NOT sent now. The next run where `market_open` is True
-    flushes every held post first (see _flush_pending), each labeled
-    "🌙 After Hours", before processing this run's new posts — so an
-    overnight post surfaces at the next trading-hours run instead of
-    firing off a Telegram message at 2am. `market_open` defaults to True
-    (send immediately, exactly like before this feature existed) so
-    existing callers/tests that don't care about trading hours are
-    unaffected; run_check passes the real current value via
-    notify_filter.is_market_hours_now().
+    A post that should be notified is always sent immediately, regardless of
+    the hour — only the scrape cadence differs outside 09:30-17:30 (see
+    run_check's off-hours throttle), not whether a matching post gets sent.
+    A post found outside that window is still sent right away, just labeled
+    "🌙 After Hours" (see notify_filter.is_after_hours) so the reader knows
+    it happened off-hours. `_flush_pending` runs unconditionally first only
+    to drain any row left over from the older hold-until-market-open
+    behavior; new posts are never queued.
 
     Notification happens before the DB insert so that if `send_post` raises
     (e.g. a real Telegram API error), the post is NOT marked as seen and will
@@ -107,8 +102,7 @@ def process_new_posts(
     if classify is None:
         classify = classify_post
 
-    if market_open:
-        _flush_pending(conn, config, send_post)
+    _flush_pending(conn, config, send_post)
 
     new_posts: list[Post] = []
     for post in posts:
@@ -130,7 +124,7 @@ def process_new_posts(
 
         bucket = notify_filter.classify_bucket(post, conn)
         notify = notify_filter.should_notify(bucket, post, signal)
-        if notify and market_open:
+        if notify:
             for chat_id in _notify_chat_ids(config):
                 send_post(
                     config.telegram_bot_token,
@@ -158,10 +152,6 @@ def process_new_posts(
             image_local_path,
             now_iso(),
             signal_json,
-            # Queued (notified=False) only when this post should be sent but
-            # we're outside trading hours right now; every other case (won't
-            # be sent at all, or was sent just above) is already handled.
-            notified=(not notify) or market_open,
         )
         new_posts.append(post)
 
@@ -180,11 +170,14 @@ def run_check(config: Config | None = None) -> int:
     likely real-world failure mode.
 
     Outside market hours, most invocations are a fast no-op: the deployment
-    schedule stays fixed (e.g. every 10 min, all day — see deploy/README.md)
-    so the hold queue flushes promptly at 09:30, but there's nothing
-    time-sensitive to catch overnight, so notify_filter.should_run_offhours_check
-    throttles the actual scrape+process work to once per hour off-hours
-    rather than reconfiguring the scheduler for two cadences.
+    schedule stays fixed (e.g. every 10 min, all day — see deploy/README.md),
+    but there's no need to hit Sponser's server that often overnight, so
+    notify_filter.should_run_offhours_check throttles the actual
+    scrape+process work to once per hour off-hours rather than
+    reconfiguring the scheduler for two cadences. This only affects how often
+    new posts are *discovered* off-hours — once found, a post is sent
+    immediately regardless of the hour (see process_new_posts), just labeled
+    "🌙 After Hours" when applicable.
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -213,8 +206,7 @@ def run_check(config: Config | None = None) -> int:
         alert(f"scraper run failed: {exc}")
         return 1
 
-    market_open = notify_filter.is_market_hours_now()
-    if not market_open:
+    if not notify_filter.is_market_hours_now():
         if not notify_filter.should_run_offhours_check(conn):
             log.info("skipping off-hours check (already checked within the last hour)")
             return 0
@@ -228,7 +220,7 @@ def run_check(config: Config | None = None) -> int:
         return 1
 
     try:
-        new_posts = process_new_posts(conn, config, posts, market_open=market_open)
+        new_posts = process_new_posts(conn, config, posts)
     except Exception as exc:  # noqa: BLE001 - fail loudly on ANY processing error
         log.error("run failed: %s", exc)
         alert(f"scraper run failed: {exc}")
