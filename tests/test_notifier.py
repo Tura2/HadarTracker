@@ -60,18 +60,18 @@ def test_format_message_body_only():
 
 def test_format_message_replaces_known_emoji_code_in_body():
     out = notifier.format_message("", (), "אתה באמת ביביסט ללא מוח.|30|")
-    assert out == sentinel("<b>תוכן:</b>\nאתה באמת ביביסט ללא מוח.😉")
+    assert out == sentinel("<b>תוכן:</b>\nאתה באמת ביביסט ללא מוח.😲")
 
 
 def test_format_message_replaces_repeated_emoji_codes():
     out = notifier.format_message("", (), "וואלה|35||35|")
-    assert out == sentinel("<b>תוכן:</b>\nוואלה😆😆")
+    assert out == sentinel("<b>תוכן:</b>\nוואלה🤔🤔")
 
 
 def test_format_message_replaces_emoji_code_in_subject_and_root_subject():
     out = notifier.format_message("כותרת|1|", (), "גוף", root_subject="תגובה|36|")
     assert out.splitlines()[0] == "<b>הגיב ל:</b> תגובה❤️"
-    assert "<b>כותרת:</b> כותרת🙂" in out
+    assert "<b>כותרת:</b> כותרת🤣" in out
 
 
 def test_format_message_drops_unknown_emoji_code():

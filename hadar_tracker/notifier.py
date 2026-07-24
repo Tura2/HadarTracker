@@ -51,16 +51,30 @@ def _esc(text: str | None) -> str:
 # Sponser's forum editor encodes smileys as |NN| placeholders in the raw
 # text (resolved client-side on the site via a `var ICONS = [...]` table to
 # <img> tags — see https://www.sponser.co.il/Images/{filename} — which the
-# JSON API we scrape never does). Mapped by hand from the actual smiley
-# images for every code observed in Hadar's posts; a handful (4, 34, 128,
-# 164, 203) are best-effort guesses from small/ambiguous source images.
-# Codes not in this table are dropped rather than left as a raw "|999|".
+# JSON API we scrape never does). Rebuilt from the real ICONS table (fetched
+# live from Forum.aspx, decoded as windows-1255 — the table's own filenames
+# are Hebrew words naming the smiley, e.g. code 164 -> "דב.gif" = "bear")
+# cross-checked against every code actually observed in Hadar's historical
+# posts (data/hadar.sqlite3). Codes whose filename is Hebrew and unambiguous
+# (e.g. "כן"/"yes", "נשיקה"/"kiss") are mapped straight from that word; codes
+# with an opaque English/numeric filename (8, 13, 128, 135, 136, 161, 164,
+# 165, 170, 203, 255) were additionally downloaded and viewed directly to
+# confirm the emoji. That direct check caught a real bug: code 164 was
+# previously mapped to 🐂 (bull) but the actual image is a red bear — the
+# exact opposite trading signal — now fixed to 🐻; its paired up/down-arrow
+# codes 136 (was silently dropped) and 165 (ditto) are now included too.
+# Only 128, 13, and 170 remain low-confidence guesses (small/generic images
+# with no naming hint even after visual inspection). Codes not in this table
+# are dropped rather than left as a raw "|999|".
 _EMOJI_CODES = {
-    "1": "🙂", "3": "😠", "4": "👍", "5": "😎", "6": "🙁", "8": "🏅",
-    "9": "😉", "10": "🤢", "12": "🌹", "13": "🙂", "15": "😌", "21": "🌸",
-    "26": "😂", "28": "🎂", "30": "😉", "31": "😏", "32": "😊", "34": "🤷",
-    "35": "😆", "36": "❤️", "38": "🤔", "40": "😎", "52": "😂", "78": "🪬",
-    "128": "🙂", "135": "📈", "164": "🐂", "203": "🙄", "255": "😍", "267": "💬",
+    "1": "🤣", "3": "😠", "4": "👍", "5": "👎", "6": "😕", "8": "🏅",
+    "9": "🙅", "10": "🙏", "12": "🌹", "13": "🙂", "14": "😢", "15": "😘",
+    "21": "🌸", "24": "🌿", "26": "🤡", "28": "🎂", "30": "😲", "31": "😉",
+    "32": "😂", "34": "👏", "35": "🤔", "36": "❤️", "38": "💡", "40": "🙏",
+    "41": "🔊", "46": "🤦", "52": "🍀", "78": "🪬", "98": "👎", "124": "😳",
+    "128": "🙂", "135": "📈", "136": "📉", "161": "🤷", "164": "🐻",
+    "165": "🐂", "170": "👍", "179": "😵‍💫", "203": "🏳️", "255": "🥰",
+    "265": "😴", "267": "💬",
 }
 _EMOJI_CODE_RE = re.compile(r"\|(\d+)\|")
 
