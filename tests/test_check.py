@@ -464,6 +464,79 @@ def test_run_check_runs_offhours_check_when_none_ran_yet(tmp_path, monkeypatch):
     assert db.get_meta(conn, "last_offhours_check") is not None
 
 
+def _blocked(**k):
+    raise client.BlockedError("403 Forbidden (cf-mitigated: challenge)")
+
+
+def test_run_check_block_alerts_once_and_backs_off(tmp_path, monkeypatch):
+    config = dataclasses_replace(_make_file_config(tmp_path), telegram_extra_chat_ids=("99",))
+    monkeypatch.setattr(notify_filter, "is_market_hours_now", lambda: True)
+    calls = []
+    monkeypatch.setattr(client, "fetch_posts", lambda **k: calls.append(1) or _blocked())
+    alerts = []
+    monkeypatch.setattr(
+        "hadar_tracker.notifier.send_alert",
+        lambda token, chat_id, message: alerts.append((chat_id, message)),
+    )
+
+    assert check.run_check(config) == 1
+    # Second run is inside the back-off window: no scrape, no alert.
+    assert check.run_check(config) == 0
+
+    assert calls == [1]
+    assert len(alerts) == 1
+    assert alerts[0][0] == "42"  # admin only, never the extra recipients
+    assert "blocked" in alerts[0][1]
+
+
+def test_run_check_repeated_block_does_not_realert_and_retries_every_two_hours(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta
+    config = _make_file_config(tmp_path)
+    monkeypatch.setattr(notify_filter, "is_market_hours_now", lambda: True)
+    monkeypatch.setattr(client, "fetch_posts", _blocked)
+    alerts = []
+    monkeypatch.setattr(
+        "hadar_tracker.notifier.send_alert",
+        lambda token, chat_id, message: alerts.append(message),
+    )
+    conn = db.connect(config.db_path)
+    db.init_db(conn)
+
+    for expected_minutes in (120, 120, 120):
+        # Pretend the previous back-off already expired.
+        db.set_meta(conn, "blocked_until", "2000-01-01T00:00:00+02:00")
+        before = datetime.now(notify_filter.IL_TZ)
+        assert check.run_check(config) == 1
+        until = datetime.fromisoformat(db.get_meta(conn, "blocked_until"))
+        assert timedelta(minutes=expected_minutes - 1) < until - before <= timedelta(minutes=expected_minutes + 1)
+
+    assert len(alerts) == 1
+
+
+def test_run_check_sends_recovery_alert_and_clears_block(tmp_path, monkeypatch):
+    config = _make_file_config(tmp_path)
+    monkeypatch.setattr(notify_filter, "is_market_hours_now", lambda: True)
+    conn = db.connect(config.db_path)
+    db.init_db(conn)
+    db.set_meta(conn, "block_streak", "3")
+    db.set_meta(conn, "blocked_since", "2026-09-25T13:26:00+03:00")
+    db.set_meta(conn, "blocked_until", "2000-01-01T00:00:00+02:00")
+    monkeypatch.setattr(client, "fetch_posts", lambda **k: [])
+    alerts = []
+    monkeypatch.setattr(
+        "hadar_tracker.notifier.send_alert",
+        lambda token, chat_id, message: alerts.append(message),
+    )
+
+    assert check.run_check(config) == 0
+    assert check.run_check(config) == 0
+
+    assert len(alerts) == 1
+    assert "recovered" in alerts[0]
+    assert db.get_meta(conn, "block_streak") is None
+    assert db.get_meta(conn, "blocked_until") is None
+
+
 class _FakeResponse:
     """Same shape as tests/test_client.py's FakeResponse — reused here so the
     real fetch_raw/fetch_posts/parse_posts chain runs unmodified; only the
@@ -486,8 +559,8 @@ class _FakeRequests:
         self.response = response
         self.calls = []
 
-    def post(self, url, data=None, headers=None, timeout=None):
-        self.calls.append({"url": url, "data": data, "headers": headers, "timeout": timeout})
+    def post(self, url, data=None, impersonate=None, timeout=None):
+        self.calls.append({"url": url, "data": data, "impersonate": impersonate, "timeout": timeout})
         return self.response
 
 
