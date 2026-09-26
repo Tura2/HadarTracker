@@ -56,8 +56,15 @@ so they run from the repo root without installing the package.
 **No browser, ever.** The project scrapes two plain-HTTP JSON endpoints directly — there is no
 Playwright/Selenium/BeautifulSoup anywhere in the application path. This was a deliberate,
 hard-won pivot: headless-browser automation gets blocked by the site's Cloudflare WAF
-(`navigator.webdriver`/headless-UA detection), but a plain `requests` call to the *same*
-endpoints the page's own JS calls is not blocked. `scripts/inspect_page.py` and
+(`navigator.webdriver`/headless-UA detection), but a plain HTTP call to the *same*
+endpoints the page's own JS calls is not blocked. That HTTP call must use `curl_cffi` with
+`impersonate="chrome"` (`scraper/client.py`'s shared `IMPERSONATE` constant, used by `client.py`,
+`history.py`, and `images.py`), NOT plain `requests`. Starting 2026-09-25, Cloudflare returned
+`403 cf-mitigated: challenge` to plain `requests`, because its TLS/HTTP2 fingerprint didn't
+match the Chrome User-Agent it claimed. `curl_cffi` reproduces a real Chrome handshake and sets
+matching headers itself, so don't add a manual User-Agent. If blocks come back, try
+`pip install -U curl_cffi` first. (`requests` is still a dependency, but only `signal.py`'s
+OpenRouter call uses it.) `scripts/inspect_page.py` and
 `tests/fixtures/user_messages_page1.html` are leftover artifacts from the original
 (abandoned) Playwright investigation — harmless, but not part of the running app.
 
@@ -120,9 +127,13 @@ review.
   flush via `fetch_pending_posts`/`mark_notified`; no current caller inserts with `notified=False`
   since posts now always send immediately, but the column/lookup stay so any row a pre-upgrade
   deployment left queued still drains on the next run. A small `meta` key-value table
-  (`get_meta`/`set_meta`) holds run-level state that isn't a post — currently just
-  `notify_filter`'s off-hours-check throttle timestamp.
+  (`get_meta`/`set_meta`/`delete_meta`) holds run-level state that isn't a post:
+  `notify_filter`'s off-hours-check throttle timestamp and `check.py`'s 403 back-off state
+  (`block_streak`/`blocked_since`/`blocked_until`).
 - `scraper/client.py`, `scraper/history.py`, `scraper/parse.py` — see Architecture above.
+  `client.fetch_raw` raises `client.BlockedError` (including the `cf-mitigated` header when
+  present) on HTTP 403, so `check.py` can tell a Cloudflare block apart from other failures.
+  Any other HTTP error still goes through `raise_for_status`.
 - `images.py` — attachment download.
 - `notify_filter.py` — decides whether/when a post actually reaches Telegram.
   `classify_bucket` sorts a post into own-thread-root / reply-to-his-own-thread /
@@ -187,14 +198,23 @@ review.
   DB setup and returns 0 immediately (no scrape at all) unless an hour has passed since the last
   off-hours check — see "Timing/scheduling" below for why the interval itself lives here, not in
   the scheduler. This only throttles *discovery*; once a post is scraped, it sends right away no
-  matter the hour.
+  matter the hour. **403 back-off:** when the scrape raises `client.BlockedError`, `run_check`
+  sends ONE admin-only alert on the first block and returns 1. For the next
+  `BLOCK_RETRY_MINUTES` (120) it returns 0 without scraping, then tries once and waits another
+  window if still blocked; repeat blocks don't alert again. On the first successful scrape it
+  sends one "recovered" alert and clears the meta keys. Before this, a block retried and alerted
+  on every run (~300 alerts in 22h), and the constant retries likely kept the block in place.
+  The back-off check runs before the off-hours throttle check. `run_check` also sets the `httpx`
+  logger to WARNING, because at INFO it logs Telegram Bot API URLs, and those contain the bot
+  token. Don't lower it.
 - `backfill.py` — walks `scraper/history.py` backward from the current page, stopping once a
   page's oldest item crosses the `--days` cutoff (default 30). Never sends Telegram notifications
   (it's a historical import, not a live alert stream — dumping months of backfilled posts as
   Telegram messages would be spam). Safe to interrupt and rerun.
 
 **Testing discipline:** every test suite (`tests/test_*.py`) monkeypatches at the network/Telegram
-boundary (`requests`, `notifier.Bot`, or the injected `download`/`send_post`/`fetch_page`
+boundary (the module-level `requests` name, which is `curl_cffi.requests` in the scraper/images
+modules, so fakes must accept an `impersonate=` kwarg; `notifier.Bot`; or the injected `download`/`send_post`/`fetch_page`
 callables) — none hit the live site or Telegram. `tests/fixtures/sample_stream.json` is the
 hand-authored payload shape used across parser/client/check tests; keep it in sync with the real
 API shape if the site changes. `tests/test_check.py::test_run_check_end_to_end_through_real_parser`
@@ -203,7 +223,7 @@ boundary is faked) — it exists to catch cross-module shape mismatches that iso
 would miss.
 
 **Deployment** (`deploy/`): target is a systemd timer (or cron) on an Oracle Cloud VPS running
-`python -m hadar_tracker.check` every 10–15 minutes, **all day, unchanged** — the schedule doesn't
+`python -m hadar_tracker.check` every 5 minutes (`deploy/hadar-tracker.timer`), **all day, unchanged** — the schedule doesn't
 narrow around 09:30-17:30; `notify_filter`/`check.py` handle the off-hours *scrape* throttle in
 code instead (see "Timing/scheduling" below). The scraper still needs to run continuously so a
 newly-found post — in or out of market hours — gets sent without delay. See `deploy/README.md` for
@@ -216,7 +236,10 @@ the full walkthrough.
   Telegram alerts but ~10x more requests to Sponser's own server during its busiest hours — the
   project exists because their WAF already blocks bot-like traffic once (see Architecture above),
   so this is a real (if unquantified) risk, partially offset by `run_check`'s existing fail-loud
-  alerting surfacing any scrape breakage immediately rather than silently.
+  alerting surfacing any scrape breakage immediately rather than silently. (The 2026-09-25 block
+  happened while the VM was running a 1-minute timer. It's now 5 minutes.) While blocked, the
+  2-hour 403 back-off in `check.py` overrides this cadence. Change that with
+  `check.BLOCK_RETRY_MINUTES`, not the timer.
 - **Off-hours check interval** (17:30-09:30): deliberately NOT a second scheduler entry — the same
   timer/cron keeps firing on its normal in-hours cadence all day, and `notify_filter
   .OFFHOURS_CHECK_INTERVAL_SECONDS` (currently 3600 = 1 hour) makes `run_check` skip the actual
