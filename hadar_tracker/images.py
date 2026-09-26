@@ -2,14 +2,11 @@ from __future__ import annotations
 
 import os
 
-import requests
+from curl_cffi import requests
+
+from hadar_tracker.scraper.client import IMPERSONATE
 
 IMAGE_BASE = "https://www.sponser.co.il/ForumFiles/"
-
-_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-)
 
 
 def download_image(msg_file_name: str, images_dir: str, timeout: int = 30) -> str:
@@ -31,7 +28,7 @@ def download_image(msg_file_name: str, images_dir: str, timeout: int = 30) -> st
     os.makedirs(images_dir, exist_ok=True)
     response = requests.get(
         IMAGE_BASE + msg_file_name,
-        headers={"User-Agent": _USER_AGENT},
+        impersonate=IMPERSONATE,
         timeout=timeout,
     )
     response.raise_for_status()

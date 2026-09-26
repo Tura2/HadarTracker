@@ -1,20 +1,27 @@
 from __future__ import annotations
 
-import requests
+from curl_cffi import requests
 
 from hadar_tracker.models import Post
 from hadar_tracker.scraper.parse import HADAR_USER_ID, ScrapeError, parse_posts
 
 ENDPOINT = "https://www.sponser.co.il/Handlers/HD_STREAM_FORUM_USER_MESSAGES.ashx"
 
-# An ordinary desktop User-Agent — the same request the page's own JS makes.
-# Deliberately NOT a headless/automation fingerprint (that is what gets blocked).
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-)
+# Sponser's Cloudflare front challenges clients whose TLS/HTTP2 fingerprint
+# doesn't match their User-Agent — plain `requests` claiming to be Chrome got
+# 403 `cf-mitigated: challenge` from 2026-09-25. curl_cffi impersonates a real
+# Chrome handshake and sets the matching User-Agent/headers itself, so no
+# manual User-Agent is sent. Shared by every module that talks to Sponser.
+IMPERSONATE = "chrome"
 
-__all__ = ["ENDPOINT", "USER_AGENT", "ScrapeError", "fetch_raw", "fetch_posts"]
+__all__ = ["ENDPOINT", "IMPERSONATE", "BlockedError", "ScrapeError", "fetch_raw", "fetch_posts"]
+
+
+class BlockedError(Exception):
+    """Raised on HTTP 403 — Sponser's Cloudflare front is refusing us (e.g.
+    `cf-mitigated: challenge`). Distinct from other HTTP errors so check.py
+    can back off and alert once instead of retrying and alerting every run.
+    """
 
 
 def fetch_raw(
@@ -24,14 +31,19 @@ def fetch_raw(
 ) -> dict:
     """POST the stream endpoint and return the parsed JSON payload.
 
-    Raises for HTTP errors so an unexpected block/outage fails loudly.
+    Raises BlockedError on 403 and raises for any other HTTP error, so an
+    unexpected block/outage fails loudly.
     """
     response = requests.post(
         ENDPOINT,
         data={"ForumId": forum_id, "IsFull": 1, "UserId": user_id, "m": 0},
-        headers={"User-Agent": USER_AGENT},
+        impersonate=IMPERSONATE,
         timeout=timeout,
     )
+    if response.status_code == 403:
+        mitigated = getattr(response, "headers", {}).get("cf-mitigated")
+        detail = f" (cf-mitigated: {mitigated})" if mitigated else ""
+        raise BlockedError(f"403 Forbidden from {ENDPOINT}{detail}")
     response.raise_for_status()
     return response.json()
 

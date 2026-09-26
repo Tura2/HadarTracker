@@ -21,8 +21,8 @@ class _FakeRequests:
         self._response = response
         self.calls = []
 
-    def get(self, url, params=None, headers=None, timeout=None):
-        self.calls.append({"url": url, "params": params, "headers": headers, "timeout": timeout})
+    def get(self, url, params=None, impersonate=None, timeout=None):
+        self.calls.append({"url": url, "params": params, "impersonate": impersonate, "timeout": timeout})
         return self._response
 
 
@@ -37,7 +37,7 @@ def test_fetch_history_page_builds_expected_request(monkeypatch):
     call = fake.calls[0]
     assert call["url"] == history.HISTORY_ENDPOINT
     assert call["params"] == {"f": 1, "p": 44400}
-    assert "HeadlessChrome" not in call["headers"]["User-Agent"]
+    assert call["impersonate"] == "chrome"
 
 
 def test_fetch_history_page_raises_on_http_error(monkeypatch):

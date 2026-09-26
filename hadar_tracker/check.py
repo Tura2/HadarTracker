@@ -4,6 +4,7 @@ import dataclasses
 import json
 import logging
 import sys
+from datetime import datetime, timedelta
 
 from hadar_tracker import db, images, notifier, notify_filter
 from hadar_tracker.config import Config, load_config
@@ -11,6 +12,41 @@ from hadar_tracker.models import Post, Signal
 from hadar_tracker.scraper import client
 from hadar_tracker.signal import classify_post
 from hadar_tracker.util import now_iso
+
+# Back-off after Sponser's Cloudflare front returns 403. Retrying every run
+# while blocked keeps the block alive and used to send one admin alert per
+# run (~1,400/day at a 1-minute timer), so instead: alert once, try only
+# every 2 hours while blocked, and alert once more when a scrape succeeds
+# again — at which point the normal timer cadence resumes on its own. State
+# lives in the meta table so it survives across the independent
+# systemd-triggered runs.
+BLOCK_RETRY_MINUTES = 120
+_BLOCK_STREAK_KEY = "block_streak"
+_BLOCKED_SINCE_KEY = "blocked_since"
+_BLOCKED_UNTIL_KEY = "blocked_until"
+
+
+def _record_block(conn, now: datetime) -> tuple[int, datetime]:
+    """Bump the consecutive-block streak and schedule the next attempt.
+    Returns (streak, retry_at)."""
+    streak = int(db.get_meta(conn, _BLOCK_STREAK_KEY) or 0) + 1
+    retry_at = now + timedelta(minutes=BLOCK_RETRY_MINUTES)
+    db.set_meta(conn, _BLOCK_STREAK_KEY, str(streak))
+    db.set_meta(conn, _BLOCKED_UNTIL_KEY, retry_at.isoformat())
+    if streak == 1:
+        db.set_meta(conn, _BLOCKED_SINCE_KEY, now.isoformat())
+    return streak, retry_at
+
+
+def _clear_block(conn) -> str | None:
+    """Reset block state after a successful scrape. Returns when the block
+    started if we were blocked, else None."""
+    if db.get_meta(conn, _BLOCK_STREAK_KEY) is None:
+        return None
+    since = db.get_meta(conn, _BLOCKED_SINCE_KEY)
+    for key in (_BLOCK_STREAK_KEY, _BLOCKED_SINCE_KEY, _BLOCKED_UNTIL_KEY):
+        db.delete_meta(conn, key)
+    return since or "unknown"
 
 
 def _notify_chat_ids(config: Config) -> tuple[str, ...]:
@@ -183,6 +219,9 @@ def run_check(config: Config | None = None) -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    # httpx logs every request URL at INFO, and Telegram's Bot API puts the
+    # bot token in the URL path — keep it out of the journal.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     log = logging.getLogger("hadar_tracker.check")
 
     if config is None:
@@ -206,6 +245,12 @@ def run_check(config: Config | None = None) -> int:
         alert(f"scraper run failed: {exc}")
         return 1
 
+    now = datetime.now(notify_filter.IL_TZ)
+    blocked_until = db.get_meta(conn, _BLOCKED_UNTIL_KEY)
+    if blocked_until and now < datetime.fromisoformat(blocked_until):
+        log.info("skipping check: backing off after a 403 block until %s", blocked_until)
+        return 0
+
     if not notify_filter.is_market_hours_now():
         if not notify_filter.should_run_offhours_check(conn):
             log.info("skipping off-hours check (already checked within the last hour)")
@@ -214,10 +259,25 @@ def run_check(config: Config | None = None) -> int:
 
     try:
         posts = client.fetch_posts(user_id=config.user_id, forum_id=config.forum_id)
+    except client.BlockedError as exc:
+        streak, retry_at = _record_block(conn, now)
+        log.error("scrape blocked (attempt %d): %s — next try at %s", streak, exc, retry_at.isoformat())
+        if streak == 1:
+            alert(
+                f"blocked by Sponser/Cloudflare: {exc}. Retrying every "
+                f"2 hours; you'll get one more message when scraping works "
+                f"again and the normal schedule resumes."
+            )
+        return 1
     except Exception as exc:  # noqa: BLE001 - fail loudly on ANY scrape error
         log.error("scrape failed: %s", exc)
         alert(f"scraper run failed: {exc}")
         return 1
+
+    blocked_since = _clear_block(conn)
+    if blocked_since:
+        log.info("scrape recovered (blocked since %s)", blocked_since)
+        alert(f"recovered: scraping works again (blocked since {blocked_since}).")
 
     try:
         new_posts = process_new_posts(conn, config, posts)

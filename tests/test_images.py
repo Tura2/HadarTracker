@@ -20,8 +20,8 @@ class FakeRequests:
         self.response = response
         self.calls = []
 
-    def get(self, url, headers=None, timeout=None):
-        self.calls.append({"url": url, "headers": headers, "timeout": timeout})
+    def get(self, url, impersonate=None, timeout=None):
+        self.calls.append({"url": url, "impersonate": impersonate, "timeout": timeout})
         return self.response
 
 
@@ -33,6 +33,7 @@ def test_download_image_writes_file_and_returns_path(tmp_path, monkeypatch):
     with open(dest, "rb") as handle:
         assert handle.read() == b"\x89PNG\r\nfake"
     assert fake.calls[0]["url"] == images.IMAGE_BASE + "abc123.gif"
+    assert fake.calls[0]["impersonate"] == "chrome"
 
 
 def test_download_image_raises_on_http_error(tmp_path, monkeypatch):

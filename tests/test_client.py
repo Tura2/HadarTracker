@@ -29,8 +29,8 @@ class FakeRequests:
         self.response = response
         self.calls = []
 
-    def post(self, url, data=None, headers=None, timeout=None):
-        self.calls.append({"url": url, "data": data, "headers": headers, "timeout": timeout})
+    def post(self, url, data=None, impersonate=None, timeout=None):
+        self.calls.append({"url": url, "data": data, "impersonate": impersonate, "timeout": timeout})
         return self.response
 
 
@@ -42,13 +42,21 @@ def test_fetch_raw_posts_expected_form_body(monkeypatch):
     call = fake.calls[0]
     assert call["url"] == client.ENDPOINT
     assert call["data"] == {"ForumId": 1, "IsFull": 1, "UserId": 5609, "m": 0}
-    assert "User-Agent" in call["headers"]
+    assert call["impersonate"] == client.IMPERSONATE
 
 
 def test_fetch_raw_raises_on_http_error(monkeypatch):
-    fake = FakeRequests(FakeResponse({}, status=403))
+    fake = FakeRequests(FakeResponse({}, status=500))
     monkeypatch.setattr(client, "requests", fake)
     with pytest.raises(RuntimeError):
+        client.fetch_raw()
+
+
+def test_fetch_raw_raises_blocked_error_on_403(monkeypatch):
+    response = FakeResponse({}, status=403)
+    response.headers = {"cf-mitigated": "challenge"}
+    monkeypatch.setattr(client, "requests", FakeRequests(response))
+    with pytest.raises(client.BlockedError, match="cf-mitigated: challenge"):
         client.fetch_raw()
 
 

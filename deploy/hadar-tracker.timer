@@ -1,9 +1,9 @@
 [Unit]
-Description=Run HadarTracker check every 10 minutes
+Description=Run HadarTracker check every 5 minutes
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=10min
+OnBootSec=1min
+OnUnitActiveSec=5min
 Unit=hadar-tracker.service
 
 [Install]
